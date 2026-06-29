@@ -1,5 +1,5 @@
--- 👕 АВТОПОКУПКА v11.2 - ИСПРАВЛЕННЫЙ ПОИСК МАГАЗИНОВ + УМНЫЕ ФИЛЬТРЫ + 2 ПОПЫТКИ
--- ✅ Поиск Shop_ShopZone_X | ✅ Улучшенное определение редкости/цены | ✅ Логи фильтрации
+-- 👕 АВТОПОКУПКА v11.3 - ФИНАЛЬНЫЕ ФИЛЬТРЫ + СУПЕРХОДЬБА + 2 ПОПЫТКИ
+-- ✅ Исправлены короткие ключевые слова | ✅ Нормализация редкости | ✅ Логи фильтрации
 
 -- ============================================
 -- СЕРВИСЫ
@@ -18,7 +18,7 @@ local humanoid = character:WaitForChild("Humanoid")
 local rootPart = character:WaitForChild("HumanoidRootPart")
 
 print("\n" .. string.rep("=", 80))
-print("👕 АВТОПОКУПКА v11.2 - ИСПРАВЛЕННЫЙ ПОИСК")
+print("👕 АВТОПОКУПКА v11.3 - ФИНАЛЬНЫЕ ФИЛЬТРЫ")
 print(string.rep("=", 80) .. "\n")
 
 -- ============================================
@@ -69,12 +69,13 @@ local RARITY_NAMES = {
     legendary = "Легендарная"
 }
 
+-- ИСПРАВЛЕННЫЕ КЛЮЧЕВЫЕ СЛОВА (без коротких "r", "c" и т.п.)
 local RARITY_KEYWORDS = {
     legendary = {"легенд", "legendary", "legend", "лег", "leg"},
-    epic = {"эпич", "epic", "эп", "ep"},
-    rare = {"редк", "rare", "ред", "r"},
-    uncommon = {"необыч", "uncommon", "необы", "uc", "uncom"},
-    common = {"обычн", "common", "обыч", "обы", "c", "com"}
+    epic = {"эпич", "epic"},
+    rare = {"редк", "rare"},
+    uncommon = {"необыч", "uncommon"},
+    common = {"обычн", "common"}
 }
 
 -- ============================================
@@ -117,7 +118,7 @@ local function getDistance(pos1, pos2)
 end
 
 local function log(message)
-    print("[AutoBuy v11.2] " .. message)
+    print("[AutoBuy v11.3] " .. message)
 end
 
 local function formatNumber(num)
@@ -131,7 +132,7 @@ local function formatNumber(num)
 end
 
 -- ============================================
--- УЛУЧШЕННОЕ ОПРЕДЕЛЕНИЕ РЕДКОСТИ
+-- УЛУЧШЕННОЕ ОПРЕДЕЛЕНИЕ РЕДКОСТИ (без ложных срабатываний)
 -- ============================================
 local function detectRarity(item)
     if not item.parent then return "common" end
@@ -142,7 +143,9 @@ local function detectRarity(item)
         local attrStr = tostring(attrValue):lower()
         for rarity, keywords in pairs(RARITY_KEYWORDS) do
             for _, kw in ipairs(keywords) do
-                if attrStr:find(kw) then return rarity end
+                if attrStr:find(kw, 1, true) then
+                    return rarity
+                end
             end
         end
     end
@@ -153,14 +156,18 @@ local function detectRarity(item)
             local val = tostring(child.Value):lower()
             for rarity, keywords in pairs(RARITY_KEYWORDS) do
                 for _, kw in ipairs(keywords) do
-                    if val:find(kw) then return rarity end
+                    if val:find(kw, 1, true) then
+                        return rarity
+                    end
                 end
             end
         elseif child:IsA("ObjectValue") and child.Value and child.Value:IsA("StringValue") then
             local val = tostring(child.Value.Value):lower()
             for rarity, keywords in pairs(RARITY_KEYWORDS) do
                 for _, kw in ipairs(keywords) do
-                    if val:find(kw) then return rarity end
+                    if val:find(kw, 1, true) then
+                        return rarity
+                    end
                 end
             end
         end
@@ -177,7 +184,9 @@ local function detectRarity(item)
                             local text = guiChild.Text:lower()
                             for rarity, keywords in pairs(RARITY_KEYWORDS) do
                                 for _, kw in ipairs(keywords) do
-                                    if text:find(kw) then return rarity end
+                                    if text:find(kw, 1, true) then
+                                        return rarity
+                                    end
                                 end
                             end
                         end
@@ -192,11 +201,13 @@ local function detectRarity(item)
     local name = obj.Name:lower()
     for rarity, keywords in pairs(RARITY_KEYWORDS) do
         for _, kw in ipairs(keywords) do
-            if name:find(kw) then return rarity end
+            if name:find(kw, 1, true) then
+                return rarity
+            end
         end
     end
 
-    return "common"
+    return "common"  -- если ничего не подошло
 end
 
 -- ============================================
@@ -240,11 +251,17 @@ local function detectPrice(item)
 end
 
 -- ============================================
--- ФИЛЬТРАЦИЯ (С ОТЛАДКОЙ)
+-- ФИЛЬТРАЦИЯ (С НОРМАЛИЗАЦИЕЙ РЕДКОСТИ)
 -- ============================================
 local function shouldBuyItem(item)
     if not item.rarity then item.rarity = detectRarity(item) end
     if not item.price then item.price = detectPrice(item) end
+
+    -- Нормализация: если редкость не совпадает с допустимыми ключами, считаем "common"
+    if not RARITY_NAMES[item.rarity] then
+        log("⚠️ " .. item.name .. " неизвестная редкость '" .. tostring(item.rarity) .. "', заменена на common")
+        item.rarity = "common"
+    end
 
     -- Редкость
     if not SETTINGS.RARITY_FILTER[item.rarity] then
@@ -447,7 +464,6 @@ local function findShops()
         end
     end
     
-    -- Правильный подсчёт ключей
     local count = 0
     for _ in pairs(shopZones) do count = count + 1 end
     log("📊 Всего магазинов: " .. count)
@@ -465,7 +481,6 @@ local function findClothes()
             local path = obj:GetFullName()
             local action = obj.ActionText or ""
             
-            -- Проверяем, находится ли в магазине
             local inShop = path:find("Shop_") or path:find("Shop") or path:find("Store") or path:find("Clothing")
             
             if inShop and (action:find("Взять") or action:find("Take")) then
@@ -490,7 +505,6 @@ local function findClothes()
                 
                 local position = findPosition(obj) or findPosition(parent)
                 
-                -- Определяем имя магазина из пути
                 local shopName = "Unknown"
                 for name in path:gmatch("Shop_ShopZone_%d+") do
                     shopName = name
@@ -538,7 +552,6 @@ local function findClothes()
     
     log("✅ Найдено одежды: " .. #clothes)
     
-    -- Определяем редкость и цену
     log("\n🎨 Определение редкости и цены...")
     for i, item in ipairs(clothes) do
         item.rarity = detectRarity(item)
@@ -639,7 +652,7 @@ end
 -- GUI (ПОЛНЫЙ)
 -- ============================================
 local screenGui = Instance.new("ScreenGui")
-screenGui.Name = "AutoBuy_v11_2"
+screenGui.Name = "AutoBuy_v11_3"
 screenGui.ResetOnSpawn = false
 screenGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
 screenGui.Parent = player:WaitForChild("PlayerGui")
@@ -663,7 +676,7 @@ local titleLabel = Instance.new("TextLabel")
 titleLabel.Size = UDim2.new(1, -45, 1, 0)
 titleLabel.Position = UDim2.new(0, 10, 0, 0)
 titleLabel.BackgroundTransparency = 1
-titleLabel.Text = " Автопокупка v11.2 | Исправленный поиск"
+titleLabel.Text = " Автопокупка v11.3 | Финальные фильтры"
 titleLabel.TextColor3 = Color3.new(1, 1, 1)
 titleLabel.Font = Enum.Font.GothamBold
 titleLabel.TextSize = 14
@@ -1334,8 +1347,8 @@ updateStats()
 updateList()
 
 print("\n" .. string.rep("=", 80))
-print("✅ Скрипт v11.2 загружен!")
+print("✅ Скрипт v11.3 загружен!")
 print("🚀 ГАРАНТИРОВАННАЯ ХОДЬБА")
-print("🎯 УМНЫЕ ФИЛЬТРЫ (смотри консоль для отладки)")
+print("🎯 ФИЛЬТРЫ ИСПРАВЛЕНЫ – проверь список в GUI")
 print("🔄 2 попытки взять предмет")
 print(string.rep("=", 80) .. "\n")
