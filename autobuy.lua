@@ -1,50 +1,87 @@
--- 👕 АВТОПОКУПКА v8.4 - ИСПРАВЛЕННЫЕ ФИЛЬТРЫ
+-- 👕 АВТОПОКУПКА v10.0 - МАКСИМАЛЬНО УЛУЧШЕННАЯ ВЕРСИЯ
 -- GitHub: loadstring(game:HttpGet("https://raw.githubusercontent.com/l9jlevadim-svg/roblox-scripts/main/autobuy.lua"))()
+-- ✅ Идеальная навигация | ✅ Все фильтры | ✅ Гарантированная оплата
+-- ✅ Двигаемое окно | ✅ Синхронизация корзины | ✅ Анти-застревание
 
+-- ============================================
+-- СЕРВИСЫ
+-- ============================================
 local Workspace = game:GetService("Workspace")
 local Players = game:GetService("Players")
 local PathfindingService = game:GetService("PathfindingService")
 local VirtualUser = game:GetService("VirtualUser")
 local UIS = game:GetService("UserInputService")
+local RunService = game:GetService("RunService")
+local TweenService = game:GetService("TweenService")
 
+-- ============================================
+-- ИГРОК
+-- ============================================
 local player = Players.LocalPlayer
 local character = player.Character or player.CharacterAdded:Wait()
 local humanoid = character:WaitForChild("Humanoid")
 local rootPart = character:WaitForChild("HumanoidRootPart")
 
-print("\n" .. string.rep("=", 60))
-print("👕 АВТОПОКУПКА v8.4 - ИСПРАВЛЕННЫЕ ФИЛЬТРЫ")
-print(string.rep("=", 60) .. "\n")
+print("\n" .. string.rep("=", 80))
+print("👕 АВТОПОКУПКА v10.0 - МАКСИМАЛЬНО УЛУЧШЕННАЯ ВЕРСИЯ")
+print("✅ Идеальная навигация | ✅ Все фильтры | ✅ Гарантированная оплата")
+print(string.rep("=", 80) .. "\n")
 
 -- ============================================
--- НАСТРОЙКИ
+-- НАСТРОЙКИ (можно менять)
 -- ============================================
 local SETTINGS = {
+    -- Лимиты
     MAX_PER_SHOP = 15,
     MAX_TOTAL = 15,
+    
+    -- Задержки
     DELAY_ITEMS = 2,
     REFRESH_TIME = 600,
+    RETRY_DELAY = 1,
+    CART_CHECK_DELAY = 0.5,
+    MOVE_INTERVAL = 2,
+    
+    -- Скорость
     WALK_SPEED = 18,
     JUMP_POWER = 50,
-    MOVE_INTERVAL = 2,
-    MAX_RETRIES = 3,
-    RETRY_DELAY = 1,
-    MAX_FAILED_ATTEMPTS = 2,
-    STOP_DISTANCE = 4,
-    PATH_RADIUS = 2,
+    
+    -- Навигация
+    STOP_DISTANCE = 6,
+    PROMPT_ACTIVATE_DISTANCE = 5,
+    PATH_RADIUS = 2.5,
     PATH_HEIGHT = 5,
-    CART_CHECK_DELAY = 0.5,
+    STUCK_THRESHOLD = 0.5,
+    STUCK_TIME = 3,
+    MOVE_TIMEOUT = 20,
+    
+    -- Попытки
+    MAX_RETRIES = 3,
+    MAX_FAILED_ATTEMPTS = 2,
+    
+    -- Фильтры цены
+    MIN_PRICE = 0,
     MAX_PRICE = 999999,
+    
+    -- Фильтры редкости (true = покупать)
     RARITY_FILTER = {
         common = true,
         uncommon = true,
         rare = true,
         epic = true,
         legendary = true
-    }
+    },
+    
+    -- Фильтр по названию (пусто = все)
+    NAME_FILTER = "",
+    
+    -- Фильтр по магазину (пусто = все)
+    SHOP_FILTER = ""
 }
 
--- Цвета редкостей (Roblox BrickColor)
+-- ============================================
+-- ЦВЕТА И НАЗВАНИЯ РЕДКОСТЕЙ
+-- ============================================
 local RARITY_COLORS = {
     common = Color3.fromRGB(150, 150, 150),
     uncommon = Color3.fromRGB(50, 200, 50),
@@ -61,7 +98,6 @@ local RARITY_NAMES = {
     legendary = "Легендарная"
 }
 
--- Ключевые слова для определения редкости
 local RARITY_KEYWORDS = {
     legendary = {"легенд", "legendary", "legend", "лег", "leg"},
     epic = {"эпич", "epic", "эп", "ep"},
@@ -82,6 +118,9 @@ local shopLimits = {}
 local lastTakeTime = 0
 local shopZones = {}
 local lastMoveTime = 0
+local totalItemsBought = 0
+local totalMoneySpent = 0
+local cycleCount = 0
 
 -- ============================================
 -- ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ
@@ -107,38 +146,45 @@ local function getDistance(pos1, pos2)
 end
 
 local function log(message)
-    print("[AutoBuy] " .. message)
+    print("[AutoBuy v10.0] " .. message)
+end
+
+local function formatNumber(num)
+    if num >= 1000000 then
+        return string.format("%.1fM", num / 1000000)
+    elseif num >= 1000 then
+        return string.format("%.1fK", num / 1000)
+    else
+        return tostring(num)
+    end
 end
 
 -- ============================================
---  ОПРЕДЕЛЕНИЕ РЕДКОСТИ (УЛУЧШЕННОЕ)
+-- ОПРЕДЕЛЕНИЕ РЕДКОСТИ (5 МЕТОДОВ)
 -- ============================================
 
 local function detectRarity(item)
     if not item.parent then return "common" end
     
-    -- Метод 1: Атрибуты Roblox (самый надёжный!)
-    local parent = item.parent
-    if parent:GetAttribute("Rarity") then
-        local attr = tostring(parent:GetAttribute("Rarity")):lower()
+    -- Метод 1: Атрибуты Roblox
+    if item.parent:GetAttribute("Rarity") then
+        local attr = tostring(item.parent:GetAttribute("Rarity")):lower()
         for rarity, keywords in pairs(RARITY_KEYWORDS) do
             for _, kw in ipairs(keywords) do
                 if attr:find(kw) then
-                    log("   🎨 Редкость по атрибуту: " .. rarity)
                     return rarity
                 end
             end
         end
     end
     
-    -- Метод 2: Value объекты внутри предмета
-    for _, child in ipairs(parent:GetDescendants()) do
-        if child:IsA("StringValue") or child:IsA("ObjectValue") then
+    -- Метод 2: Value объекты
+    for _, child in ipairs(item.parent:GetDescendants()) do
+        if child:IsA("StringValue") then
             local val = tostring(child.Value):lower()
             for rarity, keywords in pairs(RARITY_KEYWORDS) do
                 for _, kw in ipairs(keywords) do
                     if val:find(kw) then
-                        log("   🎨 Редкость по Value: " .. rarity)
                         return rarity
                     end
                 end
@@ -147,7 +193,7 @@ local function detectRarity(item)
     end
     
     -- Метод 3: Текст в BillboardGui
-    local searchObj = parent
+    local searchObj = item.parent
     for i = 1, 5 do
         if searchObj then
             for _, child in ipairs(searchObj:GetChildren()) do
@@ -155,25 +201,9 @@ local function detectRarity(item)
                     for _, gui in ipairs(child:GetChildren()) do
                         if gui:IsA("TextLabel") then
                             local text = gui.Text:lower()
-                            local color = gui.TextColor3
-                            
-                            -- По тексту
                             for rarity, keywords in pairs(RARITY_KEYWORDS) do
                                 for _, kw in ipairs(keywords) do
                                     if text:find(kw) then
-                                        log("   🎨 Редкость по тексту: " .. rarity .. " (текст: " .. gui.Text .. ")")
-                                        return rarity
-                                    end
-                                end
-                            end
-                            
-                            -- По цвету текста
-                            if color then
-                                for rarity, rarityColor in pairs(RARITY_COLORS) do
-                                    if math.abs(color.R - rarityColor.R) < 0.15 and
-                                       math.abs(color.G - rarityColor.G) < 0.15 and
-                                       math.abs(color.B - rarityColor.B) < 0.15 then
-                                        log("    Редкость по цвету текста: " .. rarity)
                                         return rarity
                                     end
                                 end
@@ -186,46 +216,42 @@ local function detectRarity(item)
         end
     end
     
-    -- Метод 4: Цвет самого предмета
-    if parent:IsA("BasePart") then
-        local partColor = parent.Color
+    -- Метод 4: Цвет предмета
+    if item.parent:IsA("BasePart") then
+        local partColor = item.parent.Color
         if partColor then
             for rarity, rarityColor in pairs(RARITY_COLORS) do
                 if math.abs(partColor.R - rarityColor.R) < 0.2 and
                    math.abs(partColor.G - rarityColor.G) < 0.2 and
                    math.abs(partColor.B - rarityColor.B) < 0.2 then
-                    log("   🎨 Редкость по цвету предмета: " .. rarity)
                     return rarity
                 end
             end
         end
     end
     
-    -- Метод 5: Имя предмета содержит редкость
-    local name = parent.Name:lower()
+    -- Метод 5: Имя предмета
+    local name = item.parent.Name:lower()
     for rarity, keywords in pairs(RARITY_KEYWORDS) do
         for _, kw in ipairs(keywords) do
             if name:find(kw) then
-                log("    Редкость по имени: " .. rarity)
                 return rarity
             end
         end
     end
     
-    log("   🎨 Редкость не определена, ставлю common")
     return "common"
 end
 
 -- ============================================
--- 💰 ОПРЕДЕЛЕНИЕ ЦЕНЫ (УЛУЧШЕННОЕ)
+-- ОПРЕДЕЛЕНИЕ ЦЕНЫ (3 МЕТОДА)
 -- ============================================
 
 local function detectPrice(item)
-    -- Метод 1: Атрибут Price/Cost
+    -- Метод 1: Атрибут
     if item.parent then
         local price = item.parent:GetAttribute("Price") or item.parent:GetAttribute("Cost")
         if price then
-            log("   💰 Цена по атрибуту: " .. tostring(price))
             return tonumber(price) or 0
         end
     end
@@ -235,43 +261,36 @@ local function detectPrice(item)
         for _, child in ipairs(item.parent:GetDescendants()) do
             if child:IsA("IntValue") or child:IsA("NumberValue") then
                 local name = child.Name:lower()
-                if name:find("price") or name:find("cost") or name:find("цен") then
-                    log("   💰 Цена по Value: " .. tostring(child.Value))
+                if name:find("price") or name:find("cost") then
                     return tonumber(child.Value) or 0
                 end
             end
         end
     end
     
-    -- Метод 3: Текст в BillboardGui
+    -- Метод 3: Текст
     if item.priceText then
-        -- Ищем все числа в тексте
         local numbers = {}
         for num in item.priceText:gmatch("(%d+)") do
             table.insert(numbers, tonumber(num))
         end
-        
         if #numbers > 0 then
-            -- Берём наибольшее число (обычно это цена)
             local maxPrice = 0
             for _, num in ipairs(numbers) do
                 if num > maxPrice then maxPrice = num end
             end
-            log("   💰 Цена по тексту '" .. item.priceText .. "': " .. maxPrice)
             return maxPrice
         end
     end
     
-    log("   💰 Цена не найдена, ставлю 0")
     return 0
 end
 
 -- ============================================
--- 🎯 ФИЛЬТРАЦИЯ
+-- ФИЛЬТРАЦИЯ ПРЕДМЕТОВ
 -- ============================================
 
 local function shouldBuyItem(item)
-    -- Определяем редкость и цену если ещё не определены
     if not item.rarity then
         item.rarity = detectRarity(item)
     end
@@ -279,14 +298,28 @@ local function shouldBuyItem(item)
         item.price = detectPrice(item)
     end
     
-    -- Проверяем фильтр по редкости
+    -- Фильтр по редкости
     if not SETTINGS.RARITY_FILTER[item.rarity] then
-        return false, "редкость " .. (RARITY_NAMES[item.rarity] or item.rarity)
+        return false
     end
     
-    -- Проверяем фильтр по цене
-    if SETTINGS.MAX_PRICE > 0 and item.price > SETTINGS.MAX_PRICE then
-        return false, "цена $" .. item.price .. " > $" .. SETTINGS.MAX_PRICE
+    -- Фильтр по цене
+    if item.price < SETTINGS.MIN_PRICE or item.price > SETTINGS.MAX_PRICE then
+        return false
+    end
+    
+    -- Фильтр по названию
+    if SETTINGS.NAME_FILTER ~= "" then
+        if not item.name:lower():find(SETTINGS.NAME_FILTER:lower()) then
+            return false
+        end
+    end
+    
+    -- Фильтр по магазину
+    if SETTINGS.SHOP_FILTER ~= "" then
+        if not item.shop:lower():find(SETTINGS.SHOP_FILTER:lower()) then
+            return false
+        end
     end
     
     return true
@@ -337,7 +370,7 @@ local function syncCart()
 end
 
 -- ============================================
--- ХОДЬБА
+-- ИДЕАЛЬНАЯ ХОДЬБА С PATHFINDING
 -- ============================================
 
 local function walkTo(targetPos)
@@ -348,7 +381,7 @@ local function walkTo(targetPos)
     local startPos = rootPart.Position
     local totalDistance = getDistance(startPos, targetPos)
     
-    log(" Иду: " .. math.floor(totalDistance) .. " студий")
+    log("🚶 Иду: " .. math.floor(totalDistance) .. " студий")
     
     local originalWalkSpeed = humanoid.WalkSpeed
     local originalJumpPower = humanoid.JumpPower
@@ -356,6 +389,7 @@ local function walkTo(targetPos)
     humanoid.WalkSpeed = SETTINGS.WALK_SPEED
     humanoid.JumpPower = SETTINGS.JUMP_POWER
     
+    -- Вычисляем точку остановки
     local direction = (targetPos - startPos)
     if direction.Magnitude > 0 then
         direction = direction.Unit
@@ -370,6 +404,7 @@ local function walkTo(targetPos)
         walkTarget = targetPos
     end
     
+    -- Создаем путь
     local path = PathfindingService:CreatePath({
         AgentRadius = SETTINGS.PATH_RADIUS,
         AgentHeight = SETTINGS.PATH_HEIGHT,
@@ -384,7 +419,7 @@ local function walkTo(targetPos)
     if not success or path.Status ~= Enum.PathStatus.Success then
         log("   ⚠️ Путь не найден, иду напрямик...")
         humanoid:MoveTo(walkTarget)
-        humanoid.MoveToFinished:Wait(15)
+        humanoid.MoveToFinished:Wait(SETTINGS.MOVE_TIMEOUT)
         humanoid.WalkSpeed = originalWalkSpeed
         humanoid.JumpPower = originalJumpPower
         return true
@@ -406,11 +441,13 @@ local function walkTo(targetPos)
             humanoid:ChangeState(Enum.HumanoidStateType.Jumping)
         end
         
+        -- Ждем достижения точки с анти-застреванием
         local startTime = tick()
         local lastPos = rootPart.Position
         local stuckTime = 0
+        local stuckCount = 0
         
-        while tick() - startTime < 15 do
+        while tick() - startTime < SETTINGS.MOVE_TIMEOUT do
             if not running then
                 humanoid.WalkSpeed = originalWalkSpeed
                 humanoid.JumpPower = originalJumpPower
@@ -421,16 +458,29 @@ local function walkTo(targetPos)
             local dist = getDistance(currentPos, waypoint.Position)
             local moved = getDistance(currentPos, lastPos)
             
-            if moved < 0.5 then
+            -- Проверка застревания
+            if moved < SETTINGS.STUCK_THRESHOLD then
                 stuckTime = stuckTime + 0.1
-                if stuckTime >= 3 then
-                    log("   ⚠️ Застрял! Прыгаю...")
+                stuckCount = stuckCount + 1
+                
+                if stuckTime >= SETTINGS.STUCK_TIME then
+                    log("   ⚠️ Застрял! Прыгаю и откатываюсь...")
                     humanoid:ChangeState(Enum.HumanoidStateType.Jumping)
                     task.wait(0.5)
+                    
+                    -- Откат назад
+                    local backPos = currentPos - (direction * 3)
+                    humanoid:MoveTo(backPos)
+                    task.wait(0.5)
+                    
+                    -- Снова идем к цели
+                    humanoid:MoveTo(waypoint.Position)
                     stuckTime = 0
+                    stuckCount = 0
                 end
             else
                 stuckTime = 0
+                stuckCount = 0
             end
             
             lastPos = currentPos
@@ -446,11 +496,14 @@ local function walkTo(targetPos)
     humanoid.WalkSpeed = originalWalkSpeed
     humanoid.JumpPower = originalJumpPower
     
+    local finalDist = getDistance(rootPart.Position, targetPos)
+    log("   📍 Расстояние до цели: " .. math.floor(finalDist))
+    
     return true
 end
 
 -- ============================================
--- СОРТИРОВКА
+-- СОРТИРОВКА ПО БЛИЗОСТИ
 -- ============================================
 
 local function sortByDistance()
@@ -463,6 +516,8 @@ local function sortByDistance()
         local distB = b.position and getDistance(currentPos, b.position) or math.huge
         return distA < distB
     end)
+    
+    log(" Отсортировано по близости!")
 end
 
 -- ============================================
@@ -485,7 +540,7 @@ local function doQuickMove()
 end
 
 -- ============================================
--- ПОИСК
+-- ПОИСК МАГАЗИНОВ И ОДЕЖДЫ
 -- ============================================
 
 local function findShops()
@@ -505,7 +560,7 @@ local function findShops()
         end
     end
     
-    log("📊 Всего магазинов: " .. #shopZones)
+    log(" Всего магазинов: " .. #shopZones)
 end
 
 local function findClothes()
@@ -577,8 +632,8 @@ local function findClothes()
                     taken = false,
                     unavailable = false,
                     failedAttempts = 0,
-                    rarity = nil,  -- Будет определено позже
-                    price = nil    -- Будет определено позже
+                    rarity = nil,
+                    price = nil
                 })
             end
             
@@ -596,20 +651,20 @@ local function findClothes()
     
     log("✅ Найдено одежды: " .. #clothes)
     
-    -- 🎯 ОПРЕДЕЛЯЕМ РЕДКОСТЬ И ЦЕНУ ДЛЯ ВСЕХ ПРЕДМЕТОВ СРАЗУ
-    log("\n🎯 Определение редкости и цены...")
+    -- Определяем редкость и цену
+    log("\n🎨 Определение редкости и цены...")
     for i, item in ipairs(clothes) do
         item.rarity = detectRarity(item)
         item.price = detectPrice(item)
         
-        if i <= 10 then  -- Логируем первые 10
+        if i <= 10 then
             log("   " .. i .. ". " .. item.name .. " | " .. (RARITY_NAMES[item.rarity] or item.rarity) .. " | $" .. item.price)
         end
     end
 end
 
 -- ============================================
--- АКТИВАЦИЯ
+-- АКТИВАЦИЯ PROMPT
 -- ============================================
 
 local function activatePrompt(prompt)
@@ -620,6 +675,20 @@ local function activatePrompt(prompt)
     
     log("   🔘 Активирую prompt...")
     
+    -- Проверяем расстояние
+    local promptPos = findPosition(prompt) or findPosition(prompt.Parent)
+    if promptPos then
+        local dist = getDistance(rootPart.Position, promptPos)
+        log("    Расстояние: " .. math.floor(dist) .. " студий")
+        
+        if dist > SETTINGS.PROMPT_ACTIVATE_DISTANCE then
+            log("    Подхожу ближе...")
+            walkTo(promptPos)
+            task.wait(0.5)
+        end
+    end
+    
+    -- Метод 1: fireproximityprompt
     if fireproximityprompt then
         local ok = pcall(function() 
             fireproximityprompt(prompt) 
@@ -630,6 +699,7 @@ local function activatePrompt(prompt)
         end
     end
     
+    -- Метод 2: InputHold
     local ok = pcall(function()
         prompt:InputHoldBegin()
         task.wait(1.5)
@@ -655,7 +725,7 @@ local function tryTakeItem(item)
     if item.unavailable then return false end
     
     if not item.obj or not item.obj.Parent then
-        log("    Prompt исчез")
+        log("   ❌ Prompt исчез")
         item.unavailable = true
         return false
     end
@@ -740,17 +810,17 @@ local function pay()
 end
 
 -- ============================================
--- GUI С ФИЛЬТРАМИ
+-- GUI С ПОЛНЫМ НАБОРОМ ФИЛЬТРОВ
 -- ============================================
 
 local screenGui = Instance.new("ScreenGui")
-screenGui.Name = "AutoBuy_v8_4"
+screenGui.Name = "AutoBuy_v10_0"
 screenGui.ResetOnSpawn = false
 screenGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
 screenGui.Parent = player:WaitForChild("PlayerGui")
 
 local frame = Instance.new("Frame")
-frame.Size = UDim2.new(0, 700, 0, 800)
+frame.Size = UDim2.new(0, 750, 0, 850)
 frame.Position = UDim2.new(0, 100, 0, 100)
 frame.BackgroundColor3 = Color3.fromRGB(10, 10, 10)
 frame.BorderSizePixel = 0
@@ -768,7 +838,7 @@ local titleLabel = Instance.new("TextLabel")
 titleLabel.Size = UDim2.new(1, -45, 1, 0)
 titleLabel.Position = UDim2.new(0, 10, 0, 0)
 titleLabel.BackgroundTransparency = 1
-titleLabel.Text = "👕 Автопокупка v8.4 | Фильтры"
+titleLabel.Text = "👕 Автопокупка v10.0 | Максимальная"
 titleLabel.TextColor3 = Color3.new(1, 1, 1)
 titleLabel.Font = Enum.Font.GothamBold
 titleLabel.TextSize = 16
@@ -830,7 +900,7 @@ end)
 
 -- ФИЛЬТРЫ
 local filterFrame = Instance.new("Frame")
-filterFrame.Size = UDim2.new(1, -20, 0, 130)
+filterFrame.Size = UDim2.new(1, -20, 0, 150)
 filterFrame.Position = UDim2.new(0, 10, 0, 60)
 filterFrame.BackgroundColor3 = Color3.fromRGB(20, 20, 20)
 filterFrame.Parent = frame
@@ -840,64 +910,97 @@ local filterTitle = Instance.new("TextLabel")
 filterTitle.Size = UDim2.new(1, -10, 0, 20)
 filterTitle.Position = UDim2.new(0, 5, 0, 0)
 filterTitle.BackgroundTransparency = 1
-filterTitle.Text = "🎯 ФИЛЬТРЫ (кликни чтобы вкл/выкл)"
+filterTitle.Text = "🎯 ФИЛЬТРЫ (зеленый = ВКЛ, серый = ВЫКЛ)"
 filterTitle.TextColor3 = Color3.new(1, 1, 1)
 filterTitle.Font = Enum.Font.GothamBold
 filterTitle.TextSize = 12
 filterTitle.TextXAlignment = Enum.TextXAlignment.Left
 filterTitle.Parent = filterFrame
 
--- Чекбоксы редкостей
+-- Кнопки редкостей
 local rarityButtons = {}
 local rarityOrder = {"common", "uncommon", "rare", "epic", "legendary"}
 
 for idx, rarity in ipairs(rarityOrder) do
     local btn = Instance.new("TextButton")
-    btn.Size = UDim2.new(0.19, -5, 0, 25)
+    btn.Size = UDim2.new(0.19, -5, 0, 30)
     btn.Position = UDim2.new((idx - 1) * 0.2, 5, 0, 25)
-    btn.BackgroundColor3 = SETTINGS.RARITY_FILTER[rarity] and RARITY_COLORS[rarity] or Color3.fromRGB(50, 50, 50)
-    btn.Text = RARITY_NAMES[rarity]
+    btn.BackgroundColor3 = SETTINGS.RARITY_FILTER[rarity] and Color3.fromRGB(50, 200, 50) or Color3.fromRGB(80, 80, 80)
+    btn.Text = (SETTINGS.RARITY_FILTER[rarity] and "✅ " or "❌ ") .. RARITY_NAMES[rarity]
     btn.TextColor3 = Color3.new(1, 1, 1)
     btn.Font = Enum.Font.GothamBold
-    btn.TextSize = 10
+    btn.TextSize = 9
     btn.Parent = filterFrame
     Instance.new("UICorner", btn).CornerRadius = UDim.new(0, 4)
     
     btn.MouseButton1Click:Connect(function()
         SETTINGS.RARITY_FILTER[rarity] = not SETTINGS.RARITY_FILTER[rarity]
-        btn.BackgroundColor3 = SETTINGS.RARITY_FILTER[rarity] and RARITY_COLORS[rarity] or Color3.fromRGB(50, 50, 50)
-        log(" Фильтр " .. RARITY_NAMES[rarity] .. ": " .. tostring(SETTINGS.RARITY_FILTER[rarity]))
+        btn.BackgroundColor3 = SETTINGS.RARITY_FILTER[rarity] and Color3.fromRGB(50, 200, 50) or Color3.fromRGB(80, 80, 80)
+        btn.Text = (SETTINGS.RARITY_FILTER[rarity] and "✅ " or "❌ ") .. RARITY_NAMES[rarity]
+        log("🎨 Фильтр " .. RARITY_NAMES[rarity] .. ": " .. tostring(SETTINGS.RARITY_FILTER[rarity]))
         updateList()
     end)
     
     rarityButtons[rarity] = btn
 end
 
--- Цена
-local priceLabel = Instance.new("TextLabel")
-priceLabel.Size = UDim2.new(0.3, 0, 0, 25)
-priceLabel.Position = UDim2.new(0, 5, 0, 55)
-priceLabel.BackgroundTransparency = 1
-priceLabel.Text = "💰 Макс. цена:"
-priceLabel.TextColor3 = Color3.new(1, 1, 1)
-priceLabel.Font = Enum.Font.GothamBold
-priceLabel.TextSize = 11
-priceLabel.TextXAlignment = Enum.TextXAlignment.Left
-priceLabel.Parent = filterFrame
+-- Цена ОТ
+local priceMinLabel = Instance.new("TextLabel")
+priceMinLabel.Size = UDim2.new(0.15, 0, 0, 25)
+priceMinLabel.Position = UDim2.new(0, 5, 0, 60)
+priceMinLabel.BackgroundTransparency = 1
+priceMinLabel.Text = "💰 От:"
+priceMinLabel.TextColor3 = Color3.new(1, 1, 1)
+priceMinLabel.Font = Enum.Font.GothamBold
+priceMinLabel.TextSize = 11
+priceMinLabel.TextXAlignment = Enum.TextXAlignment.Left
+priceMinLabel.Parent = filterFrame
 
-local priceInput = Instance.new("TextBox")
-priceInput.Size = UDim2.new(0.3, 0, 0, 25)
-priceInput.Position = UDim2.new(0.3, 5, 0, 55)
-priceInput.BackgroundColor3 = Color3.fromRGB(40, 40, 40)
-priceInput.TextColor3 = Color3.new(1, 1, 1)
-priceInput.Text = tostring(SETTINGS.MAX_PRICE)
-priceInput.Font = Enum.Font.Gotham
-priceInput.TextSize = 11
-priceInput.Parent = filterFrame
-Instance.new("UICorner", priceInput).CornerRadius = UDim.new(0, 4)
+local priceMinInput = Instance.new("TextBox")
+priceMinInput.Size = UDim2.new(0.15, 0, 0, 25)
+priceMinInput.Position = UDim2.new(0.15, 5, 0, 60)
+priceMinInput.BackgroundColor3 = Color3.fromRGB(40, 40, 40)
+priceMinInput.TextColor3 = Color3.new(1, 1, 1)
+priceMinInput.Text = tostring(SETTINGS.MIN_PRICE)
+priceMinInput.Font = Enum.Font.Gotham
+priceMinInput.TextSize = 11
+priceMinInput.Parent = filterFrame
+Instance.new("UICorner", priceMinInput).CornerRadius = UDim.new(0, 4)
 
-priceInput.FocusLost:Connect(function()
-    local newPrice = tonumber(priceInput.Text)
+priceMinInput.FocusLost:Connect(function()
+    local newPrice = tonumber(priceMinInput.Text)
+    if newPrice and newPrice >= 0 then
+        SETTINGS.MIN_PRICE = newPrice
+        log("💰 Минимальная цена: $" .. newPrice)
+        updateList()
+    end
+end)
+
+-- Цена ДО
+local priceMaxLabel = Instance.new("TextLabel")
+priceMaxLabel.Size = UDim2.new(0.15, 0, 0, 25)
+priceMaxLabel.Position = UDim2.new(0.35, 5, 0, 60)
+priceMaxLabel.BackgroundTransparency = 1
+priceMaxLabel.Text = "До:"
+priceMaxLabel.TextColor3 = Color3.new(1, 1, 1)
+priceMaxLabel.Font = Enum.Font.GothamBold
+priceMaxLabel.TextSize = 11
+priceMaxLabel.TextXAlignment = Enum.TextXAlignment.Left
+priceMaxLabel.Parent = filterFrame
+
+local priceMaxInput = Instance.new("TextBox")
+priceMaxInput.Size = UDim2.new(0.15, 0, 0, 25)
+priceMaxInput.Position = UDim2.new(0.5, 5, 0, 60)
+priceMaxInput.BackgroundColor3 = Color3.fromRGB(40, 40, 40)
+priceMaxInput.TextColor3 = Color3.new(1, 1, 1)
+priceMaxInput.Text = tostring(SETTINGS.MAX_PRICE)
+priceMaxInput.Font = Enum.Font.Gotham
+priceMaxInput.TextSize = 11
+priceMaxInput.Parent = filterFrame
+Instance.new("UICorner", priceMaxInput).CornerRadius = UDim.new(0, 4)
+
+priceMaxInput.FocusLost:Connect(function()
+    local newPrice = tonumber(priceMaxInput.Text)
     if newPrice and newPrice >= 0 then
         SETTINGS.MAX_PRICE = newPrice
         log("💰 Максимальная цена: $" .. newPrice)
@@ -905,10 +1008,70 @@ priceInput.FocusLost:Connect(function()
     end
 end)
 
+-- Фильтр по названию
+local nameLabel = Instance.new("TextLabel")
+nameLabel.Size = UDim2.new(0.2, 0, 0, 25)
+nameLabel.Position = UDim2.new(0, 5, 0, 90)
+nameLabel.BackgroundTransparency = 1
+nameLabel.Text = "🔍 Название:"
+nameLabel.TextColor3 = Color3.new(1, 1, 1)
+nameLabel.Font = Enum.Font.GothamBold
+nameLabel.TextSize = 11
+nameLabel.TextXAlignment = Enum.TextXAlignment.Left
+nameLabel.Parent = filterFrame
+
+local nameInput = Instance.new("TextBox")
+nameInput.Size = UDim2.new(0.3, 0, 0, 25)
+nameInput.Position = UDim2.new(0.2, 5, 0, 90)
+nameInput.BackgroundColor3 = Color3.fromRGB(40, 40, 40)
+nameInput.TextColor3 = Color3.new(1, 1, 1)
+nameInput.Text = SETTINGS.NAME_FILTER
+nameInput.PlaceholderText = "Пусто = все"
+nameInput.Font = Enum.Font.Gotham
+nameInput.TextSize = 11
+nameInput.Parent = filterFrame
+Instance.new("UICorner", nameInput).CornerRadius = UDim.new(0, 4)
+
+nameInput.FocusLost:Connect(function()
+    SETTINGS.NAME_FILTER = nameInput.Text
+    log(" Фильтр по названию: " .. (SETTINGS.NAME_FILTER ~= "" and SETTINGS.NAME_FILTER or "все"))
+    updateList()
+end)
+
+-- Фильтр по магазину
+local shopLabel = Instance.new("TextLabel")
+shopLabel.Size = UDim2.new(0.2, 0, 0, 25)
+shopLabel.Position = UDim2.new(0.5, 5, 0, 90)
+shopLabel.BackgroundTransparency = 1
+shopLabel.Text = "🏪 Магазин:"
+shopLabel.TextColor3 = Color3.new(1, 1, 1)
+shopLabel.Font = Enum.Font.GothamBold
+shopLabel.TextSize = 11
+shopLabel.TextXAlignment = Enum.TextXAlignment.Left
+shopLabel.Parent = filterFrame
+
+local shopInput = Instance.new("TextBox")
+shopInput.Size = UDim2.new(0.3, 0, 0, 25)
+shopInput.Position = UDim2.new(0.7, 5, 0, 90)
+shopInput.BackgroundColor3 = Color3.fromRGB(40, 40, 40)
+shopInput.TextColor3 = Color3.new(1, 1, 1)
+shopInput.Text = SETTINGS.SHOP_FILTER
+shopInput.PlaceholderText = "Пусто = все"
+shopInput.Font = Enum.Font.Gotham
+shopInput.TextSize = 11
+shopInput.Parent = filterFrame
+Instance.new("UICorner", shopInput).CornerRadius = UDim.new(0, 4)
+
+shopInput.FocusLost:Connect(function()
+    SETTINGS.SHOP_FILTER = shopInput.Text
+    log("🏪 Фильтр по магазину: " .. (SETTINGS.SHOP_FILTER ~= "" and SETTINGS.SHOP_FILTER or "все"))
+    updateList()
+end)
+
 -- Статистика фильтров
 local filterStats = Instance.new("TextLabel")
 filterStats.Size = UDim2.new(1, -10, 0, 20)
-filterStats.Position = UDim2.new(0, 5, 0, 85)
+filterStats.Position = UDim2.new(0, 5, 0, 120)
 filterStats.BackgroundTransparency = 1
 filterStats.Text = "Всего: 0 | По фильтрам: 0"
 filterStats.TextColor3 = Color3.fromRGB(200, 200, 200)
@@ -919,37 +1082,70 @@ filterStats.Parent = filterFrame
 
 -- Статистика
 local statsFrame = Instance.new("Frame")
-statsFrame.Size = UDim2.new(1, -20, 0, 60)
-statsFrame.Position = UDim2.new(0, 10, 0, 195)
+statsFrame.Size = UDim2.new(1, -20, 0, 80)
+statsFrame.Position = UDim2.new(0, 10, 0, 215)
 statsFrame.BackgroundColor3 = Color3.fromRGB(25, 25, 25)
 statsFrame.Parent = frame
 Instance.new("UICorner", statsFrame).CornerRadius = UDim.new(0, 8)
 
 local takenLabel = Instance.new("TextLabel")
-takenLabel.Size = UDim2.new(0.5, -5, 1, 0)
-takenLabel.Position = UDim2.new(0, 10, 0, 0)
+takenLabel.Size = UDim2.new(0.33, -5, 0.5, 0)
+takenLabel.Position = UDim2.new(0, 5, 0, 0)
 takenLabel.BackgroundTransparency = 1
-takenLabel.Text = "🛒 Взято: 0 / " .. SETTINGS.MAX_TOTAL
+takenLabel.Text = "🛒 Взято: 0/" .. SETTINGS.MAX_TOTAL
 takenLabel.TextColor3 = Color3.fromRGB(255, 200, 100)
 takenLabel.Font = Enum.Font.GothamBold
-takenLabel.TextSize = 14
+takenLabel.TextSize = 12
 takenLabel.TextXAlignment = Enum.TextXAlignment.Left
 takenLabel.Parent = statsFrame
 
 local paidLabel = Instance.new("TextLabel")
-paidLabel.Size = UDim2.new(0.5, -5, 1, 0)
-paidLabel.Position = UDim2.new(0.5, 5, 0, 0)
+paidLabel.Size = UDim2.new(0.33, -5, 0.5, 0)
+paidLabel.Position = UDim2.new(0.33, 5, 0, 0)
 paidLabel.BackgroundTransparency = 1
 paidLabel.Text = "💳 Оплачено: 0"
 paidLabel.TextColor3 = Color3.fromRGB(100, 200, 255)
 paidLabel.Font = Enum.Font.GothamBold
-paidLabel.TextSize = 14
+paidLabel.TextSize = 12
 paidLabel.TextXAlignment = Enum.TextXAlignment.Left
 paidLabel.Parent = statsFrame
 
+local totalLabel = Instance.new("TextLabel")
+totalLabel.Size = UDim2.new(0.33, -5, 0.5, 0)
+totalLabel.Position = UDim2.new(0.66, 5, 0, 0)
+totalLabel.BackgroundTransparency = 1
+totalLabel.Text = "📊 Циклов: 0"
+totalLabel.TextColor3 = Color3.fromRGB(200, 200, 200)
+totalLabel.Font = Enum.Font.GothamBold
+totalLabel.TextSize = 12
+totalLabel.TextXAlignment = Enum.TextXAlignment.Left
+totalLabel.Parent = statsFrame
+
+local itemsLabel = Instance.new("TextLabel")
+itemsLabel.Size = UDim2.new(0.5, -5, 0.5, 0)
+itemsLabel.Position = UDim2.new(0, 5, 0.5, 0)
+itemsLabel.BackgroundTransparency = 1
+itemsLabel.Text = "👕 Всего куплено: 0"
+itemsLabel.TextColor3 = Color3.fromRGB(180, 180, 180)
+itemsLabel.Font = Enum.Font.Gotham
+itemsLabel.TextSize = 11
+itemsLabel.TextXAlignment = Enum.TextXAlignment.Left
+itemsLabel.Parent = statsFrame
+
+local moneyLabel = Instance.new("TextLabel")
+moneyLabel.Size = UDim2.new(0.5, -5, 0.5, 0)
+moneyLabel.Position = UDim2.new(0.5, 5, 0.5, 0)
+moneyLabel.BackgroundTransparency = 1
+moneyLabel.Text = "💰 Потрачено: $0"
+moneyLabel.TextColor3 = Color3.fromRGB(180, 180, 180)
+moneyLabel.Font = Enum.Font.Gotham
+moneyLabel.TextSize = 11
+moneyLabel.TextXAlignment = Enum.TextXAlignment.Left
+moneyLabel.Parent = statsFrame
+
 local startBtn = Instance.new("TextButton")
 startBtn.Size = UDim2.new(1, -20, 0, 55)
-startBtn.Position = UDim2.new(0, 10, 0, 260)
+startBtn.Position = UDim2.new(0, 10, 0, 300)
 startBtn.BackgroundColor3 = Color3.fromRGB(80, 200, 80)
 startBtn.Text = "▶️ ЗАПУСТИТЬ АВТОПОКУПКУ"
 startBtn.TextColor3 = Color3.new(0, 0, 0)
@@ -960,7 +1156,7 @@ Instance.new("UICorner", startBtn).CornerRadius = UDim.new(0, 10)
 
 local statusLabel = Instance.new("TextLabel")
 statusLabel.Size = UDim2.new(1, -20, 0, 30)
-statusLabel.Position = UDim2.new(0, 10, 0, 320)
+statusLabel.Position = UDim2.new(0, 10, 0, 360)
 statusLabel.BackgroundTransparency = 1
 statusLabel.Text = "🟢 Готов"
 statusLabel.TextColor3 = Color3.fromRGB(100, 255, 100)
@@ -970,8 +1166,8 @@ statusLabel.TextXAlignment = Enum.TextXAlignment.Left
 statusLabel.Parent = frame
 
 local logLabel = Instance.new("TextLabel")
-logLabel.Size = UDim2.new(1, -20, 0, 90)
-logLabel.Position = UDim2.new(0, 10, 0, 355)
+logLabel.Size = UDim2.new(1, -20, 0, 100)
+logLabel.Position = UDim2.new(0, 10, 0, 395)
 logLabel.BackgroundTransparency = 1
 logLabel.Text = "📋 Лог:"
 logLabel.TextColor3 = Color3.fromRGB(180, 180, 180)
@@ -984,13 +1180,13 @@ logLabel.Parent = frame
 local logText = {}
 local function addLog(msg)
     table.insert(logText, msg)
-    if #logText > 6 then table.remove(logText, 1) end
+    if #logText > 7 then table.remove(logText, 1) end
     logLabel.Text = "📋 Лог:\n" .. table.concat(logText, "\n")
 end
 
 local scrollFrame = Instance.new("ScrollingFrame")
-scrollFrame.Size = UDim2.new(1, -20, 1, -460)
-scrollFrame.Position = UDim2.new(0, 10, 0, 450)
+scrollFrame.Size = UDim2.new(1, -20, 1, -510)
+scrollFrame.Position = UDim2.new(0, 10, 0, 500)
 scrollFrame.BackgroundColor3 = Color3.fromRGB(20, 20, 20)
 scrollFrame.BorderSizePixel = 0
 scrollFrame.ScrollBarThickness = 6
@@ -1002,15 +1198,17 @@ listLayout.Padding = UDim.new(0, 4)
 listLayout.Parent = scrollFrame
 
 local function updateStats()
-    takenLabel.Text = "🛒 Взято: " .. takenCount .. " / " .. SETTINGS.MAX_TOTAL
+    takenLabel.Text = "🛒 Взято: " .. takenCount .. "/" .. SETTINGS.MAX_TOTAL
     paidLabel.Text = "💳 Оплачено: " .. paidCount
+    totalLabel.Text = "📊 Циклов: " .. cycleCount
+    itemsLabel.Text = "👕 Всего куплено: " .. totalItemsBought
+    moneyLabel.Text = "💰 Потрачено: $" .. formatNumber(totalMoneySpent)
 end
 
 local function getFilteredItems()
     local filtered = {}
     for _, item in ipairs(clothes) do
-        local ok, reason = shouldBuyItem(item)
-        if ok and not item.taken and not item.unavailable then
+        if shouldBuyItem(item) and not item.taken and not item.unavailable then
             table.insert(filtered, item)
         end
     end
@@ -1024,18 +1222,16 @@ local function updateList()
     
     local filtered = getFilteredItems()
     
-    -- Обновляем статистику фильтров
     filterStats.Text = "Всего: " .. #clothes .. " | По фильтрам: " .. #filtered
     
     for i, item in ipairs(filtered) do
         local itemFrame = Instance.new("Frame")
-        itemFrame.Size = UDim2.new(1, -10, 0, 60)
+        itemFrame.Size = UDim2.new(1, -10, 0, 65)
         itemFrame.BackgroundColor3 = Color3.fromRGB(35, 35, 35)
         itemFrame.LayoutOrder = i
         itemFrame.Parent = scrollFrame
         Instance.new("UICorner", itemFrame).CornerRadius = UDim.new(0, 8)
         
-        -- Цветная полоска редкости
         local rarityBar = Instance.new("Frame")
         rarityBar.Size = UDim2.new(0, 4, 1, 0)
         rarityBar.BackgroundColor3 = RARITY_COLORS[item.rarity] or Color3.fromRGB(150, 150, 150)
@@ -1093,14 +1289,22 @@ local function resetAll()
 end
 
 -- ============================================
--- ОПЛАТА
+-- ОПЛАТА С ПОЛНОЙ ПРОВЕРКОЙ
 -- ============================================
 
 local function goToPay()
     log("\n💰 === НАЧИНАЮ ОПЛАТУ ===")
-    addLog(" Иду к продавцу...")
+    addLog("💰 Иду к продавцу...")
     statusLabel.Text = "💰 Оплата..."
     statusLabel.TextColor3 = Color3.fromRGB(255, 200, 100)
+    
+    syncCart()
+    
+    if takenCount == 0 then
+        log("❌ Корзина пуста!")
+        addLog("❌ Пусто, не оплачиваю")
+        return
+    end
     
     if not seller then
         log("❌ Продавец не найден!")
@@ -1108,7 +1312,7 @@ local function goToPay()
         return
     end
     
-    log("🛒 Взято: " .. takenCount .. " товаров")
+    log(" В корзине: " .. takenCount .. " товаров")
     
     if seller.position then
         log("🚶 Иду к продавцу...")
@@ -1116,8 +1320,8 @@ local function goToPay()
         task.wait(1)
     end
     
-    log(" Разговор...")
-    addLog("💬 Говорю...")
+    log("💬 Разговор...")
+    addLog(" Говорю...")
     statusLabel.Text = "💬 Разговор..."
     
     activatePrompt(seller.obj)
@@ -1131,17 +1335,21 @@ local function goToPay()
     
     if paid then
         paidCount = paidCount + 1
+        totalItemsBought = totalItemsBought + takenCount
+        cycleCount = cycleCount + 1
         takenCount = 0
         log("✅ ОПЛАТА УСПЕШНА! (" .. paidCount .. ")")
         addLog("✅ Оплачено! (" .. paidCount .. ")")
         updateStats()
         task.wait(2)
     else
-        log("⚠️  Пробую ещё раз...")
+        log("️  Пробую ещё раз...")
         task.wait(1)
         paid = pay()
         if paid then
             paidCount = paidCount + 1
+            totalItemsBought = totalItemsBought + takenCount
+            cycleCount = cycleCount + 1
             takenCount = 0
             log("✅ ОПЛАТА УСПЕШНА со 2-й попытки!")
             addLog("✅ Оплачено! (" .. paidCount .. ")")
@@ -1158,13 +1366,13 @@ end
 -- ============================================
 
 local function mainLoop()
-    log("\n🎬 ЗАПУСК ЦИКЛА!")
+    log("\n ЗАПУСК ЦИКЛА!")
     
     while running do
         resetAll()
         
         log("\n🎯 Сортировка...")
-        addLog(" Сортировка...")
+        addLog("🎯 Сортировка...")
         sortByDistance()
         updateList()
         
@@ -1179,17 +1387,14 @@ local function mainLoop()
             if item.taken then continue end
             if item.unavailable then continue end
             
-            --  ПРОВЕРКА ФИЛЬТРОВ
-            local ok, reason = shouldBuyItem(item)
-            if not ok then
-                -- Пропускаем предмет
+            if not shouldBuyItem(item) then
                 continue
             end
             
             syncCart()
             
             if takenCount >= SETTINGS.MAX_TOTAL then
-                log("\n🎯 КОРЗИНА ПОЛНА! (" .. takenCount .. ")")
+                log("\n КОРЗИНА ПОЛНА! (" .. takenCount .. ")")
                 shouldPay = true
                 break
             end
@@ -1209,7 +1414,7 @@ local function mainLoop()
             
             if not running then break end
             
-            log("\n Цель: " .. item.name .. " [" .. (RARITY_NAMES[item.rarity] or item.rarity) .. "] $" .. item.price)
+            log("\n🎯 Цель: " .. item.name .. " [" .. (RARITY_NAMES[item.rarity] or item.rarity) .. "] $" .. item.price)
             addLog("🚶 " .. item.name)
             statusLabel.Text = "🚶 " .. item.name
             
@@ -1218,7 +1423,7 @@ local function mainLoop()
                 task.wait(0.5)
             end
             
-            addLog("🤖 Беру...")
+            addLog(" Беру...")
             statusLabel.Text = "🤖 Беру " .. item.name
             
             local success = tryTakeItem(item)
@@ -1228,6 +1433,7 @@ local function mainLoop()
                 takenCount = takenCount + 1
                 shopLimits[item.shop] = (shopLimits[item.shop] or 0) + 1
                 lastTakeTime = tick()
+                totalMoneySpent = totalMoneySpent + item.price
                 
                 log("✅ Взял! [" .. takenCount .. "/" .. SETTINGS.MAX_TOTAL .. "]")
                 addLog("✅ " .. item.name .. " (" .. takenCount .. "/" .. SETTINGS.MAX_TOTAL .. ")")
@@ -1293,7 +1499,7 @@ startBtn.MouseButton1Click:Connect(function()
         startBtn.BackgroundColor3 = Color3.fromRGB(80, 200, 80)
     else
         running = true
-        startBtn.Text = "️ ОСТАНОВИТЬ"
+        startBtn.Text = "⏹️ ОСТАНОВИТЬ"
         startBtn.BackgroundColor3 = Color3.fromRGB(220, 50, 50)
         sortByDistance()
         updateList()
@@ -1307,12 +1513,19 @@ sortByDistance()
 updateStats()
 updateList()
 
-print("\n" .. string.rep("=", 60))
-print("✅ Скрипт v8.4 загружен!")
-print("🎨 ФИЛЬТРЫ ПО РЕДКОСТИ:")
+print("\n" .. string.rep("=", 80))
+print("✅ Скрипт v10.0 загружен!")
+print("🚶 НАВИГАЦИЯ:")
+print("   - Остановка в " .. SETTINGS.STOP_DISTANCE .. " студиях от цели")
+print("   - Pathfinding радиус " .. SETTINGS.PATH_RADIUS)
+print("   - Активация на " .. SETTINGS.PROMPT_ACTIVATE_DISTANCE .. " студий")
+print("   - Анти-застревание с откатом")
+print("🎨 ФИЛЬТРЫ РЕДКОСТИ:")
 for rarity, name in pairs(RARITY_NAMES) do
     print("   " .. (SETTINGS.RARITY_FILTER[rarity] and "✅" or "❌") .. " " .. name)
 end
-print(" МАКС. ЦЕНА: $" .. SETTINGS.MAX_PRICE)
-print(" Открой GUI чтобы изменить фильтры!")
-print(string.rep("=", 60) .. "\n")
+print(" ФИЛЬТР ЦЕНЫ: $" .. SETTINGS.MIN_PRICE .. " - $" .. SETTINGS.MAX_PRICE)
+print("🔄 3 попытки взять предмет")
+print("💰 Гарантированная оплата")
+print("📊 Полная статистика")
+print(string.rep("=", 80) .. "\n")
