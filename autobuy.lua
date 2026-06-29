@@ -1,5 +1,5 @@
--- 👕 АВТОПОКУПКА v12.0 – ПОЛНАЯ ВЕРСИЯ: ЧТЕНИЕ ДАННЫХ ИЗ GUI ПЕРЕД ВЗЯТИЕМ
--- ✅ Определяет редкость/цену через MobileUI/ApartmentGui | ✅ Фильтры | ✅ Суперходьба | ✅ 2 попытки
+-- 👕 АВТОПОКУПКА v12.1 – УНИВЕРСАЛЬНЫЙ ПОИСК РЕДКОСТИ/ЦЕНЫ ПО ВСЕМ GUI
+-- ✅ Ищет NameLabel, RarityText, PriceLabel во всех ScreenGui | ✅ Фильтры | ✅ Суперходьба | ✅ 2 попытки
 
 -- ============================================
 -- СЕРВИСЫ
@@ -18,7 +18,7 @@ local humanoid = character:WaitForChild("Humanoid")
 local rootPart = character:WaitForChild("HumanoidRootPart")
 
 print("\n" .. string.rep("=", 80))
-print("👕 АВТОПОКУПКА v12.0 – ЧТЕНИЕ ДАННЫХ ИЗ GUI")
+print("👕 АВТОПОКУПКА v12.1 – УНИВЕРСАЛЬНЫЙ ПОИСК GUI")
 print(string.rep("=", 80) .. "\n")
 
 -- ============================================
@@ -118,7 +118,7 @@ local function getDistance(pos1, pos2)
 end
 
 local function log(message)
-    print("[AutoBuy v12.0] " .. message)
+    print("[AutoBuy v12.1] " .. message)
 end
 
 local function formatNumber(num)
@@ -132,48 +132,50 @@ local function formatNumber(num)
 end
 
 -- ============================================
--- ЧТЕНИЕ РЕДКОСТИ/ЦЕНЫ ИЗ GUI (MobileUI / ApartmentGui)
+-- 🔍 УНИВЕРСАЛЬНЫЙ ПОИСК РЕДКОСТИ/ЦЕНЫ ВО ВСЕХ SCREENGUI
 -- ============================================
 local function getItemDataFromGUI()
     local playerGui = player:FindFirstChild("PlayerGui")
     if not playerGui then return nil, nil end
 
-    -- Ищем MobileUI или ApartmentGui
-    local targetGui = playerGui:FindFirstChild("MobileUI") or playerGui:FindFirstChild("ApartmentGui")
-    if not targetGui then
-        for _, gui in ipairs(playerGui:GetChildren()) do
-            if gui:IsA("ScreenGui") and (gui.Name:find("Mobile") or gui.Name:find("Apartment")) then
-                targetGui = gui
-                break
-            end
-        end
-    end
-    if not targetGui then return nil, nil end
+    -- Перебираем все ScreenGui
+    for _, gui in ipairs(playerGui:GetChildren()) do
+        if gui:IsA("ScreenGui") and gui.Enabled then
+            -- Ищем внутри любые TextLabel/TextBox с нужными именами
+            local rarityEl = gui:FindFirstChild("RarityText", true)
+            local priceEl = gui:FindFirstChild("PriceLabel", true)
+            local nameEl = gui:FindFirstChild("NameLabel", true)   -- для проверки, что GUI активен и показывает предмет
 
-    local rarityText = targetGui:FindFirstChild("RarityText", true)
-    local priceLabel = targetGui:FindFirstChild("PriceLabel", true)
+            -- Если нашли хотя бы один из ключевых элементов, считаем GUI активным
+            if nameEl or rarityEl or priceEl then
+                local rarity = nil
+                if rarityEl and rarityEl:IsA("TextLabel") then
+                    local raw = rarityEl.Text:lower()
+                    rarity = RARITY_ENGLISH_MAP[raw]
+                    if not rarity then
+                        for eng, key in pairs(RARITY_ENGLISH_MAP) do
+                            if raw:find(eng) then
+                                rarity = key
+                                break
+                            end
+                        end
+                    end
+                end
 
-    local rarity = nil
-    if rarityText and rarityText:IsA("TextLabel") then
-        local raw = rarityText.Text:lower()
-        rarity = RARITY_ENGLISH_MAP[raw]
-        if not rarity then
-            for eng, key in pairs(RARITY_ENGLISH_MAP) do
-                if raw:find(eng) then
-                    rarity = key
-                    break
+                local price = 0
+                if priceEl and priceEl:IsA("TextLabel") then
+                    local num = priceEl.Text:match("(%d+)")
+                    if num then price = tonumber(num) or 0 end
+                end
+
+                -- Если нашли и редкость и цену – возвращаем
+                if rarity and price then
+                    return rarity, price
                 end
             end
         end
     end
-
-    local price = 0
-    if priceLabel and priceLabel:IsA("TextLabel") then
-        local num = priceLabel.Text:match("(%d+)")
-        if num then price = tonumber(num) or 0 end
-    end
-
-    return rarity, price
+    return nil, nil
 end
 
 -- Ожидание появления данных в GUI (до таймаута)
@@ -191,7 +193,6 @@ end
 -- ФИЛЬТРАЦИЯ
 -- ============================================
 local function shouldBuyItem(item)
-    -- Редкость и цена уже должны быть определены до вызова (через scanItemData)
     if not item.rarity or not item.price then return false end
 
     if not SETTINGS.RARITY_FILTER[item.rarity] then
@@ -243,11 +244,9 @@ end
 
 local function syncCart()
     local realCount = getRealCartCount()
-    if realCount ~= nil then
-        if realCount ~= takenCount then
-            log("🔄 Синхронизация: скрипт=" .. takenCount .. " | реальная=" .. realCount)
-            takenCount = realCount
-        end
+    if realCount ~= nil and realCount ~= takenCount then
+        log("🔄 Синхронизация: скрипт=" .. takenCount .. " | реальная=" .. realCount)
+        takenCount = realCount
         return realCount
     end
     return takenCount
@@ -287,9 +286,6 @@ local function walkTo(targetPos)
             humanoid.JumpPower = originalJumpPower
             return false
         end
-
-        local dist = getDistance(rootPart.Position, targetPos)
-        if dist <= 3 then break end
 
         if not useTeleport and tick() - moveStart > 1.2 and getDistance(rootPart.Position, startPos) < 2 then
             log("   ⚠️ Персонаж не двигается. Перехожу в режим принудительного перемещения.")
@@ -486,8 +482,7 @@ local function tryTakeItem(item)
                 log("   ❌ Prompt исчез"); item.unavailable = true; return false
             end
         end
-        local activated = activatePrompt(item.obj)
-        if activated then
+        if activatePrompt(item.obj) then
             log("   ✅ Взял!"); item.failedAttempts = 0; return true
         end
         log("   ❌ Попытка #" .. attempt .. " не удалась")
@@ -507,8 +502,7 @@ local function pay()
     local confirmPurchase = ReplicatedStorage:FindFirstChild("ShopRemotes", true)
     if confirmPurchase then confirmPurchase = confirmPurchase:FindFirstChild("ConfirmPurchase") end
     if confirmPurchase then
-        local ok = pcall(function() confirmPurchase:FireServer() end)
-        if ok then log("   ✅ RemoteEvent"); return true end
+        if pcall(function() confirmPurchase:FireServer() end) then log("   ✅ RemoteEvent"); return true end
     end
     if player:FindFirstChild("PlayerGui") then
         local shopGUI = player.PlayerGui:FindFirstChild("ShopGUI")
@@ -532,7 +526,7 @@ end
 -- GUI (полный интерфейс)
 -- ============================================
 local screenGui = Instance.new("ScreenGui")
-screenGui.Name = "AutoBuy_v12"
+screenGui.Name = "AutoBuy_v12_1"
 screenGui.ResetOnSpawn = false
 screenGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
 screenGui.Parent = player:WaitForChild("PlayerGui")
@@ -556,7 +550,7 @@ local titleLabel = Instance.new("TextLabel")
 titleLabel.Size = UDim2.new(1, -45, 1, 0)
 titleLabel.Position = UDim2.new(0, 10, 0, 0)
 titleLabel.BackgroundTransparency = 1
-titleLabel.Text = " Автопокупка v12.0 | Чтение из GUI"
+titleLabel.Text = " Автопокупка v12.1 | Универсальный поиск GUI"
 titleLabel.TextColor3 = Color3.new(1, 1, 1)
 titleLabel.Font = Enum.Font.GothamBold
 titleLabel.TextSize = 14
@@ -926,7 +920,6 @@ end
 local function getFilteredItems()
     local filtered = {}
     for _, item in ipairs(clothes) do
-        -- Временная проверка, без GUI-данных (редкость/цена могут быть nil, но они не должны влиять на отображение)
         if not item.taken and not item.unavailable then
             table.insert(filtered, item)
         end
@@ -1245,7 +1238,7 @@ updateStats()
 updateList()
 
 print("\n" .. string.rep("=", 80))
-print("✅ Скрипт v12.0 загружен!")
-print("🔍 Редкость/цена читаются из MobileUI/ApartmentGui перед взятием")
+print("✅ Скрипт v12.1 загружен!")
+print("🔍 Универсальный поиск RarityText/PriceLabel/NameLabel по ВСЕМ ScreenGui")
 print("🚀 Суперходьба | 🎯 Фильтры | 🔄 2 попытки")
 print(string.rep("=", 80) .. "\n")
