@@ -294,101 +294,142 @@ local function syncCart()
 end
 
 -- ============================================
--- 🚶 НОВАЯ НАДЁЖНАЯ ХОДЬБА (БЕЗ PATHFINDING)
+-- 🚶 НОВАЯ НАДЁЖНАЯ ХОДЬБА (БЕЗ PATHFINDING, С ОБХОДОМ ПРЕПЯТСТВИЙ)
 -- ============================================
-
 local function walkTo(targetPos)
     if not targetPos or not humanoid or not rootPart then
         log("❌ walkTo: ошибка параметров")
         return false
     end
-    
+
     local startPos = rootPart.Position
     local totalDistance = getDistance(startPos, targetPos)
-    
     log("🚶 Иду: " .. math.floor(totalDistance) .. " студий")
-    
+
     -- Сохраняем оригинальные статы
     local originalWalkSpeed = humanoid.WalkSpeed
     local originalJumpPower = humanoid.JumpPower
-    
-    -- Устанавливаем скорость
+
     humanoid.WalkSpeed = SETTINGS.WALK_SPEED
     humanoid.JumpPower = SETTINGS.JUMP_POWER
-    
-    -- Идём ПРЯМО к цели без Pathfinding
-    -- Pathfinding часто застревает в мебели и стенах
-    humanoid:MoveTo(targetPos)
-    
-    -- Ждём достижения с умной проверкой
-    local startTime = tick()
+
+    -- Переменные для контроля застревания и обхода
     local lastPosition = rootPart.Position
     local stuckTime = 0
     local stuckCount = 0
-    local maxWait = math.min(totalDistance * 0.5, 20) -- Адаптивный таймаут
-    
+    local maxWait = math.min(totalDistance * 0.5, 25)   -- адаптивный таймаут
+    local startTime = tick()
+
+    -- Параметры обхода препятствий (можешь подкрутить)
+    local OBSTACLE_CHECK_DISTANCE = 4      -- дальность луча впереди
+    local SIDE_STEP_ANGLE = 60             -- угол поворота при обходе (градусы)
+    local MAX_DEVIATION_ANGLE = 45         -- максимальное отклонение от прямого направления к цели
+    local DIRECTION_CHANGE_SPEED = 0.1     -- плавность поворота (0..1)
+
+    -- Вспомогательная: проверка, свободен ли путь на distance студий вперёд от позиции pos с направлением lookVector
+    local function isPathClear(pos, lookVector, distance)
+        local rayParams = RaycastParams.new()
+        rayParams.FilterType = Enum.RaycastFilterType.Blacklist
+        rayParams.FilterDescendantsInstances = {character}   -- игнорируем своего персонажа
+        local rayResult = workspace:Raycast(pos, lookVector * distance, rayParams)
+        return rayResult == nil
+    end
+
+    -- Начальное направление к цели
+    local function getDirectionToTarget()
+        return (targetPos - rootPart.Position).Unit
+    end
+
+    -- Основной цикл движения
     while tick() - startTime < maxWait do
         if not running then
             humanoid.WalkSpeed = originalWalkSpeed
             humanoid.JumpPower = originalJumpPower
             return false
         end
-        
+
         local currentPos = rootPart.Position
         local distToTarget = getDistance(currentPos, targetPos)
-        local moved = getDistance(currentPos, lastPosition)
-        
-        -- Проверка застревания
-        if moved < 0.3 then
-            stuckTime = stuckTime + 0.1
-            stuckCount = stuckCount + 1
-            
-            -- Если застрял 2 секунды - прыгаем
-            if stuckTime >= 2 and stuckTime < 2.5 then
-                log("   ⚠️ Застрял! Прыгаю...")
-                humanoid:ChangeState(Enum.HumanoidStateType.Jumping)
-                task.wait(0.3)
-            end
-            
-            -- Если застрял 4 секунды - телепорт
-            if stuckTime >= 4 then
-                log("   🔄 Телепорт к цели...")
-                rootPart.CFrame = CFrame.new(targetPos + Vector3.new(0, 2, 0))
-                task.wait(0.5)
-                stuckTime = 0
-                stuckCount = 0
-            end
-        else
-            stuckTime = 0
-            stuckCount = 0
-        end
-        
-        lastPosition = currentPos
-        
-        -- Если дошли (в пределах 3 студий)
+
+        -- Если уже рядом (3 студии), завершаем
         if distToTarget <= 3 then
             log("   ✅ Дошел! Расстояние: " .. math.floor(distToTarget))
             humanoid.WalkSpeed = originalWalkSpeed
             humanoid.JumpPower = originalJumpPower
             return true
         end
-        
+
+        -- Проверка, движемся ли мы
+        local moved = getDistance(currentPos, lastPosition)
+        if moved < 0.3 then
+            stuckTime = stuckTime + 0.1
+            stuckCount = stuckCount + 1
+        else
+            stuckTime = 0
+            stuckCount = 0
+        end
+        lastPosition = currentPos
+
+        -- Обработка застревания
+        if stuckTime >= 2 then
+            if stuckTime < 2.5 then
+                log("   ⚠️ Застрял! Прыгаю и смещаюсь...")
+                -- Прыжок + движение в случайную сторону
+                humanoid:ChangeState(Enum.HumanoidStateType.Jumping)
+                local strafeDir = CFrame.Angles(0, math.rad(math.random(-90, 90)), 0) * rootPart.CFrame.LookVector
+                humanoid:MoveTo(rootPart.Position + strafeDir * 3)
+                task.wait(0.4)
+            elseif stuckTime >= 4 then
+                log("   🔄 Телепорт к цели...")
+                rootPart.CFrame = CFrame.new(targetPos + Vector3.new(0, 2, 0))
+                task.wait(0.5)
+                stuckTime = 0
+                stuckCount = 0
+            end
+        end
+
+        -- ===== ИНТЕЛЛЕКТУАЛЬНЫЙ ОБХОД ПРЕПЯТСТВИЙ =====
+        local directionToTarget = getDirectionToTarget()
+        local currentLook = rootPart.CFrame.LookVector
+        local rayOrigin = rootPart.Position + Vector3.new(0, 1, 0)  -- чуть выше пола
+
+        -- Проверяем луч вперёд по текущему направлению
+        if not isPathClear(rayOrigin, currentLook, OBSTACLE_CHECK_DISTANCE) then
+            -- Препятствие прямо перед нами! Нужно повернуть в сторону.
+            -- Определим, поворачиваем влево или вправо (запоминаем предыдущий выбор, чтобы не метаться)
+            local turnRight = (stuckCount % 2 == 0)  -- чередуем, чтобы обходить устойчивые препятствия
+            local angle = turnRight and -SIDE_STEP_ANGLE or SIDE_STEP_ANGLE
+            local newDirection = (CFrame.Angles(0, math.rad(angle), 0) * currentLook).Unit
+
+            -- Но не отклоняемся слишком сильно от цели
+            local deviation = math.acos(math.clamp(newDirection:Dot(directionToTarget), -1, 1))
+            if math.deg(deviation) > MAX_DEVIATION_ANGLE then
+                -- Если отклонение велико, идём напрямую к цели (риск застревания, но не теряем направление)
+                newDirection = directionToTarget
+            end
+
+            -- Плавно поворачиваем персонажа в newDirection
+            local targetCFrame = CFrame.lookAt(rootPart.Position, rootPart.Position + newDirection)
+            rootPart.CFrame = rootPart.CFrame:Lerp(targetCFrame, DIRECTION_CHANGE_SPEED)
+        else
+            -- Путь свободен – движемся прямо к цели
+            humanoid:MoveTo(targetPos)
+        end
+
         task.wait(0.1)
     end
-    
-    -- Таймаут - проверяем финальное расстояние
+
+    -- Таймаут — последняя проверка
     local finalDist = getDistance(rootPart.Position, targetPos)
-    log("   ️ Таймаут, расстояние: " .. math.floor(finalDist))
-    
+    log("   ⏰ Таймаут, расстояние: " .. math.floor(finalDist))
     if finalDist > 5 then
         log("   🔄 Финальный телепорт...")
         rootPart.CFrame = CFrame.new(targetPos + Vector3.new(0, 2, 0))
         task.wait(0.5)
     end
-    
+
     humanoid.WalkSpeed = originalWalkSpeed
     humanoid.JumpPower = originalJumpPower
-    
     return true
 end
 
