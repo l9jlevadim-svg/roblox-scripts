@@ -1,6 +1,5 @@
--- 👕 АВТОПОКУПКА v11.0 - СУПЕРНАДЁЖНАЯ ХОДЬБА (Гарантированное перемещение) + 2 попытки
--- GitHub: loadstring(game:HttpGet("https://raw.githubusercontent.com/l9jlevadim-svg/roblox-scripts/main/autobuy.lua"))()
--- ✅ Гарантированное перемещение | ✅ 2 попытки | ✅ Все фильтры | ✅ Оплата
+-- 👕 АВТОПОКУПКА v11.1 - СУПЕРХОДЬБА + УМНЫЕ ФИЛЬТРЫ + 2 ПОПЫТКИ
+-- ✅ Гарантированное перемещение | ✅ Улучшенное определение редкости/цены | ✅ Логи фильтрации
 
 -- ============================================
 -- СЕРВИСЫ
@@ -19,7 +18,7 @@ local humanoid = character:WaitForChild("Humanoid")
 local rootPart = character:WaitForChild("HumanoidRootPart")
 
 print("\n" .. string.rep("=", 80))
-print("👕 АВТОПОКУПКА v11.0 - СУПЕРНАДЁЖНАЯ ХОДЬБА")
+print("👕 АВТОПОКУПКА v11.1 - СУПЕРХОДЬБА + УМНЫЕ ФИЛЬТРЫ")
 print(string.rep("=", 80) .. "\n")
 
 -- ============================================
@@ -118,7 +117,7 @@ local function getDistance(pos1, pos2)
 end
 
 local function log(message)
-    print("[AutoBuy v11.0] " .. message)
+    print("[AutoBuy v11.1] " .. message)
 end
 
 local function formatNumber(num)
@@ -132,22 +131,24 @@ local function formatNumber(num)
 end
 
 -- ============================================
--- ОПРЕДЕЛЕНИЕ РЕДКОСТИ
+-- УЛУЧШЕННОЕ ОПРЕДЕЛЕНИЕ РЕДКОСТИ
 -- ============================================
-
 local function detectRarity(item)
     if not item.parent then return "common" end
-    
-    if item.parent:GetAttribute("Rarity") then
-        local attr = tostring(item.parent:GetAttribute("Rarity")):lower()
+    local obj = item.parent
+
+    -- 1. Атрибуты модели
+    for attrName, attrValue in pairs(obj:GetAttributes()) do
+        local attrStr = tostring(attrValue):lower()
         for rarity, keywords in pairs(RARITY_KEYWORDS) do
             for _, kw in ipairs(keywords) do
-                if attr:find(kw) then return rarity end
+                if attrStr:find(kw) then return rarity end
             end
         end
     end
-    
-    for _, child in ipairs(item.parent:GetDescendants()) do
+
+    -- 2. StringValue / ObjectValue
+    for _, child in ipairs(obj:GetDescendants()) do
         if child:IsA("StringValue") then
             local val = tostring(child.Value):lower()
             for rarity, keywords in pairs(RARITY_KEYWORDS) do
@@ -155,17 +156,25 @@ local function detectRarity(item)
                     if val:find(kw) then return rarity end
                 end
             end
+        elseif child:IsA("ObjectValue") and child.Value and child.Value:IsA("StringValue") then
+            local val = tostring(child.Value.Value):lower()
+            for rarity, keywords in pairs(RARITY_KEYWORDS) do
+                for _, kw in ipairs(keywords) do
+                    if val:find(kw) then return rarity end
+                end
+            end
         end
     end
-    
-    local searchObj = item.parent
+
+    -- 3. BillboardGui
+    local searchObj = obj
     for i = 1, 5 do
         if searchObj then
             for _, child in ipairs(searchObj:GetChildren()) do
                 if child:IsA("BillboardGui") then
-                    for _, gui in ipairs(child:GetChildren()) do
-                        if gui:IsA("TextLabel") then
-                            local text = gui.Text:lower()
+                    for _, guiChild in ipairs(child:GetChildren()) do
+                        if guiChild:IsA("TextLabel") then
+                            local text = guiChild.Text:lower()
                             for rarity, keywords in pairs(RARITY_KEYWORDS) do
                                 for _, kw in ipairs(keywords) do
                                     if text:find(kw) then return rarity end
@@ -178,86 +187,102 @@ local function detectRarity(item)
             searchObj = searchObj.Parent
         end
     end
-    
-    local name = item.parent.Name:lower()
+
+    -- 4. Название самого предмета
+    local name = obj.Name:lower()
     for rarity, keywords in pairs(RARITY_KEYWORDS) do
         for _, kw in ipairs(keywords) do
             if name:find(kw) then return rarity end
         end
     end
-    
+
     return "common"
 end
 
 -- ============================================
--- ОПРЕДЕЛЕНИЕ ЦЕНЫ
+-- УЛУЧШЕННОЕ ОПРЕДЕЛЕНИЕ ЦЕНЫ
 -- ============================================
-
 local function detectPrice(item)
-    if item.parent then
-        local price = item.parent:GetAttribute("Price") or item.parent:GetAttribute("Cost")
-        if price then return tonumber(price) or 0 end
+    local obj = item.parent
+    if not obj then return 0 end
+
+    -- 1. Атрибуты Price/Cost
+    local price = obj:GetAttribute("Price") or obj:GetAttribute("Cost")
+    if price then
+        local num = tonumber(price)
+        if num then return num end
     end
-    
-    if item.parent then
-        for _, child in ipairs(item.parent:GetDescendants()) do
-            if child:IsA("IntValue") or child:IsA("NumberValue") then
-                local name = child.Name:lower()
-                if name:find("price") or name:find("cost") then
-                    return tonumber(child.Value) or 0
-                end
+
+    -- 2. IntValue/NumberValue
+    for _, child in ipairs(obj:GetDescendants()) do
+        if child:IsA("IntValue") or child:IsA("NumberValue") then
+            local name = child.Name:lower()
+            if name:find("price") or name:find("cost") then
+                local num = tonumber(child.Value)
+                if num then return num end
             end
         end
     end
-    
-    if item.priceText then
+
+    -- 3. Текст BillboardGui (ищем число)
+    if item.priceText and item.priceText ~= "" then
         local numbers = {}
         for num in item.priceText:gmatch("(%d+)") do
             table.insert(numbers, tonumber(num))
         end
         if #numbers > 0 then
-            local maxPrice = 0
-            for _, num in ipairs(numbers) do
-                if num > maxPrice then maxPrice = num end
-            end
-            return maxPrice
+            table.sort(numbers)
+            return numbers[#numbers]  -- максимальное число – вероятно цена
         end
     end
-    
+
     return 0
 end
 
 -- ============================================
--- ФИЛЬТРАЦИЯ
+-- ФИЛЬТРАЦИЯ (С ОТЛАДКОЙ)
 -- ============================================
-
 local function shouldBuyItem(item)
     if not item.rarity then item.rarity = detectRarity(item) end
     if not item.price then item.price = detectPrice(item) end
-    
-    if not SETTINGS.RARITY_FILTER[item.rarity] then return false end
-    if item.price < SETTINGS.MIN_PRICE or item.price > SETTINGS.MAX_PRICE then return false end
-    
+
+    -- Редкость
+    if not SETTINGS.RARITY_FILTER[item.rarity] then
+        log("⛔ " .. item.name .. " исключён: редкость " .. item.rarity .. " выключена")
+        return false
+    end
+
+    -- Цена
+    if item.price < SETTINGS.MIN_PRICE or item.price > SETTINGS.MAX_PRICE then
+        log("⛔ " .. item.name .. " исключён: цена $" .. item.price .. " вне диапазона " .. SETTINGS.MIN_PRICE .. "-" .. SETTINGS.MAX_PRICE)
+        return false
+    end
+
+    -- Название
     if SETTINGS.NAME_FILTER ~= "" then
-        if not item.name:lower():find(SETTINGS.NAME_FILTER:lower()) then return false end
+        if not item.name:lower():find(SETTINGS.NAME_FILTER:lower()) then
+            log("⛔ " .. item.name .. " исключён: не содержит '" .. SETTINGS.NAME_FILTER .. "'")
+            return false
+        end
     end
-    
+
+    -- Магазин
     if SETTINGS.SHOP_FILTER ~= "" then
-        if not item.shop:lower():find(SETTINGS.SHOP_FILTER:lower()) then return false end
+        if not item.shop:lower():find(SETTINGS.SHOP_FILTER:lower()) then
+            log("⛔ " .. item.name .. " исключён: магазин " .. item.shop .. " не совпадает с '" .. SETTINGS.SHOP_FILTER .. "'")
+            return false
+        end
     end
-    
+
     return true
 end
 
 -- ============================================
 -- СИНХРОНИЗАЦИЯ КОРЗИНЫ
 -- ============================================
-
 local function getRealCartCount()
     if not player:FindFirstChild("PlayerGui") then return nil end
-    
     local playerGui = player.PlayerGui
-    
     for _, gui in ipairs(playerGui:GetChildren()) do
         for _, child in ipairs(gui:GetDescendants()) do
             if child:IsA("TextLabel") or child:IsA("TextButton") then
@@ -267,21 +292,17 @@ local function getRealCartCount()
                     local number = text:match("(%d+)")
                     if number then
                         local count = tonumber(number)
-                        if count and count >= 0 and count <= 100 then
-                            return count
-                        end
+                        if count and count >= 0 and count <= 100 then return count end
                     end
                 end
             end
         end
     end
-    
     return nil
 end
 
 local function syncCart()
     local realCount = getRealCartCount()
-    
     if realCount ~= nil then
         if realCount ~= takenCount then
             log("🔄 Синхронизация: скрипт=" .. takenCount .. " | реальная=" .. realCount)
@@ -289,7 +310,6 @@ local function syncCart()
         end
         return realCount
     end
-    
     return takenCount
 end
 
@@ -306,23 +326,19 @@ local function walkTo(targetPos)
     local totalDistance = getDistance(startPos, targetPos)
     log("🚀 Иду к цели (" .. math.floor(totalDistance) .. " студий)")
 
-    -- Если цель уже рядом, выходим
     if totalDistance <= 3 then
         log("   ✅ Уже рядом!")
         return true
     end
 
-    -- Сохраняем оригинальные статы
     local originalWalkSpeed = humanoid.WalkSpeed
     local originalJumpPower = humanoid.JumpPower
     humanoid.WalkSpeed = SETTINGS.WALK_SPEED
     humanoid.JumpPower = SETTINGS.JUMP_POWER
 
-    -- Пробуем обычный MoveTo, но с контролем: если за 1 секунду не сдвинулся, переходим к телепортации
     local moveStart = tick()
     humanoid:MoveTo(targetPos)
     local lastPos = rootPart.Position
-
     local useTeleport = false
 
     while getDistance(rootPart.Position, targetPos) > 3 and (tick() - moveStart < 40) do
@@ -335,57 +351,43 @@ local function walkTo(targetPos)
         local dist = getDistance(rootPart.Position, targetPos)
         if dist <= 3 then break end
 
-        -- Если за 1.2 секунды практически не сдвинулся, включаем режим телепортации
         if not useTeleport and tick() - moveStart > 1.2 and getDistance(rootPart.Position, startPos) < 2 then
             log("   ⚠️ Персонаж не двигается. Перехожу в режим принудительного перемещения.")
             useTeleport = true
         end
 
         if useTeleport then
-            -- Телепортация короткими шагами (по 5 студий) с обходом препятствий
             local direction = (targetPos - rootPart.Position).Unit
             local stepSize = 5
             local newPos = rootPart.Position + direction * stepSize
-
-            -- Проверяем, нет ли препятствия впереди
             local rayParams = RaycastParams.new()
             rayParams.FilterType = Enum.RaycastFilterType.Blacklist
             rayParams.FilterDescendantsInstances = {character}
             local rayResult = workspace:Raycast(rootPart.Position, direction * stepSize, rayParams)
-
             if rayResult then
-                -- Препятствие! Пробуем сместиться в сторону
                 local right = direction:Cross(Vector3.new(0,1,0)).Unit
                 local left = -right
-                -- Проверяем оба направления
                 local function tryOffset(offsetDir)
                     local offsetStep = rootPart.Position + offsetDir * 3 + direction * 2
                     local offsetRay = workspace:Raycast(rootPart.Position, (offsetStep - rootPart.Position).Unit * 5, rayParams)
-                    if not offsetRay then
-                        return offsetStep
-                    end
+                    if not offsetRay then return offsetStep end
                     return nil
                 end
-                newPos = tryOffset(right) or tryOffset(left) or (rootPart.Position + direction * 2) -- fallback
+                newPos = tryOffset(right) or tryOffset(left) or (rootPart.Position + direction * 2)
                 log("   🧱 Обхожу препятствие, иду вбок.")
             end
-
-            -- Телепортируем персонажа на шаг
             rootPart.CFrame = CFrame.new(newPos + Vector3.new(0, 2, 0))
             task.wait(0.2)
         else
-            -- Обычное движение: ждём и проверяем застревание
             task.wait(0.3)
             local moved = getDistance(rootPart.Position, lastPos)
             if moved < 0.5 then
-                -- Если обычный MoveTo не работает, пробуем прыгнуть
                 humanoid:ChangeState(Enum.HumanoidStateType.Jumping)
             end
             lastPos = rootPart.Position
         end
     end
 
-    -- Финальный прямой телепорт, если расстояние всё ещё больше 3
     if getDistance(rootPart.Position, targetPos) > 3 then
         log("   🔄 Финальный телепорт к цели.")
         rootPart.CFrame = CFrame.new(targetPos + Vector3.new(0, 2, 0))
@@ -401,34 +403,25 @@ end
 -- ============================================
 -- СОРТИРОВКА ПО БЛИЗОСТИ
 -- ============================================
-
 local function sortByDistance()
     if not rootPart then return end
-    
     local currentPos = rootPart.Position
-    
     table.sort(clothes, function(a, b)
         local distA = a.position and getDistance(currentPos, a.position) or math.huge
         local distB = b.position and getDistance(currentPos, b.position) or math.huge
         return distA < distB
     end)
-    
     log("🎯 Отсортировано по близости!")
 end
 
 -- ============================================
 -- ДВИЖЕНИЕ ТЕЛОМ
 -- ============================================
-
 local function doQuickMove()
     local currentTime = tick()
     if currentTime - lastMoveTime >= SETTINGS.MOVE_INTERVAL then
         if humanoid and humanoid.Health > 0 then
-            local randomDir = Vector3.new(
-                math.random(-2, 2),
-                0,
-                math.random(-2, 2)
-            )
+            local randomDir = Vector3.new(math.random(-2, 2), 0, math.random(-2, 2))
             humanoid:MoveTo(rootPart.Position + randomDir)
             lastMoveTime = currentTime
         end
@@ -438,13 +431,10 @@ end
 -- ============================================
 -- ПОИСК МАГАЗИНОВ И ОДЕЖДЫ
 -- ============================================
-
 local function findShops()
     log("🔍 Поиск магазинов...")
     shopZones = {}
-    
     local patterns = {"Shop_ShopZone", "ShopZone", "Shop_", "ClothingShop", "Store"}
-    
     for _, obj in ipairs(Workspace:GetDescendants()) do
         if obj:IsA("Model") then
             for _, pattern in ipairs(patterns) do
@@ -455,19 +445,16 @@ local function findShops()
             end
         end
     end
-    
     log("📊 Всего магазинов: " .. #shopZones)
 end
 
 local function findClothes()
     log("\n🔍 Поиск одежды...")
     clothes = {}
-    
     for _, obj in ipairs(Workspace:GetDescendants()) do
         if obj:IsA("ProximityPrompt") then
             local path = obj:GetFullName()
             local action = obj.ActionText or ""
-            
             local inShop = false
             for shopName, _ in pairs(shopZones) do
                 if path:find(shopName) then
@@ -475,84 +462,57 @@ local function findClothes()
                     break
                 end
             end
-            
             if not inShop then
                 if path:find("Shop") or path:find("Store") or path:find("Clothing") then
                     inShop = true
                 end
             end
-            
             if inShop and (action:find("Взять") or action:find("Take")) then
                 local parent = obj.Parent
                 local priceText = ""
-                
                 local searchObj = parent
                 for i = 1, 5 do
                     if searchObj then
                         for _, child in ipairs(searchObj:GetChildren()) do
                             if child:IsA("BillboardGui") then
                                 for _, gui in ipairs(child:GetChildren()) do
-                                    if gui:IsA("TextLabel") then
-                                        priceText = gui.Text
-                                    end
+                                    if gui:IsA("TextLabel") then priceText = gui.Text end
                                 end
                             end
                         end
                         searchObj = searchObj.Parent
                     end
                 end
-                
                 local position = findPosition(obj) or findPosition(parent)
-                
                 local shopName = "Unknown"
                 for name, _ in pairs(shopZones) do
-                    if path:find(name) then
-                        shopName = name
-                        break
-                    end
+                    if path:find(name) then shopName = name; break end
                 end
-                
                 local floor = "1 этаж"
-                if position and position.Y > 10 then
-                    floor = "2 этаж"
-                end
-                
+                if position and position.Y > 10 then floor = "2 этаж" end
                 table.insert(clothes, {
-                    obj = obj,
-                    parent = parent,
+                    obj = obj, parent = parent,
                     name = parent and parent.Name or "Item",
                     priceText = priceText,
                     position = position,
-                    shop = shopName,
-                    floor = floor,
-                    taken = false,
-                    unavailable = false,
-                    failedAttempts = 0,
-                    rarity = nil,
-                    price = nil
+                    shop = shopName, floor = floor,
+                    taken = false, unavailable = false, failedAttempts = 0,
+                    rarity = nil, price = nil
                 })
             end
-            
             if action:find("Поговорить") or action:find("поговорить") then
                 if not seller then
-                    seller = {
-                        obj = obj,
-                        position = findPosition(obj)
-                    }
+                    seller = { obj = obj, position = findPosition(obj) }
                     log("🏪 Продавец найден")
                 end
             end
         end
     end
-    
     log("✅ Найдено одежды: " .. #clothes)
-    
-    -- Определяем редкость и цену
     log("\n🎨 Определение редкости и цены...")
     for i, item in ipairs(clothes) do
         item.rarity = detectRarity(item)
         item.price = detectPrice(item)
-        
         if i <= 10 then
             log("   " .. i .. ". " .. item.name .. " | " .. (RARITY_NAMES[item.rarity] or item.rarity) .. " | $" .. item.price)
         end
@@ -562,126 +522,70 @@ end
 -- ============================================
 -- АКТИВАЦИЯ PROMPT
 -- ============================================
-
 local function activatePrompt(prompt)
-    if not prompt then 
-        log("   ❌ prompt = nil")
-        return false 
-    end
-    
+    if not prompt then log("   ❌ prompt = nil"); return false end
     log("   🔘 Активирую prompt...")
-    
-    -- Проверяем расстояние
     local promptPos = findPosition(prompt) or findPosition(prompt.Parent)
     if promptPos then
         local dist = getDistance(rootPart.Position, promptPos)
         log("   📍 Расстояние: " .. math.floor(dist) .. " студий")
-        
         if dist > SETTINGS.PROMPT_ACTIVATE_DISTANCE then
             log("   🚶 Подхожу ближе...")
             walkTo(promptPos)
             task.wait(0.5)
         end
     end
-    
-    -- Метод 1: fireproximityprompt
     if fireproximityprompt then
-        local ok = pcall(function() 
-            fireproximityprompt(prompt) 
-        end)
-        if ok then 
-            log("   ✅ fireproximityprompt")
-            return true
-        end
+        local ok = pcall(function() fireproximityprompt(prompt) end)
+        if ok then log("   ✅ fireproximityprompt"); return true end
     end
-    
-    -- Метод 2: InputHold
-    local ok = pcall(function()
-        prompt:InputHoldBegin()
-        task.wait(1.5)
-        prompt:InputHoldEnd()
-    end)
-    
-    if ok then
-        log("   ✅ InputHold")
-        return true
-    end
-    
-    log("   ❌ Не удалось")
-    return false
+    local ok = pcall(function() prompt:InputHoldBegin(); task.wait(1.5); prompt:InputHoldEnd() end)
+    if ok then log("   ✅ InputHold"); return true end
+    log("   ❌ Не удалось"); return false
 end
 
 -- ============================================
 -- ПРОВЕРКА С ПОВТОРНЫМИ ПОПЫТКАМИ (2 попытки)
 -- ============================================
-
 local function tryTakeItem(item)
     log("🎯 Беру: " .. item.name .. " [" .. (RARITY_NAMES[item.rarity] or item.rarity) .. "] $" .. item.price)
-    
     if item.unavailable then return false end
-    
     if not item.obj or not item.obj.Parent then
-        log("   ❌ Prompt исчез")
-        item.unavailable = true
-        return false
+        log("   ❌ Prompt исчез"); item.unavailable = true; return false
     end
-    
     for attempt = 1, SETTINGS.MAX_RETRIES do
         if not running then return false end
-        
         if attempt > 1 then
             log("    Попытка #" .. attempt)
             task.wait(SETTINGS.RETRY_DELAY)
-            
             if not item.obj or not item.obj.Parent then
-                log("   ❌ Prompt исчез")
-                item.unavailable = true
-                return false
+                log("   ❌ Prompt исчез"); item.unavailable = true; return false
             end
         end
-        
         local activated = activatePrompt(item.obj)
-        
         if activated then
-            log("   ✅ Взял!")
-            item.failedAttempts = 0
-            return true
+            log("   ✅ Взял!"); item.failedAttempts = 0; return true
         end
-        
         log("   ❌ Попытка #" .. attempt .. " не удалась")
     end
-    
     log("   ❌ Все попытки неудачны")
     item.failedAttempts = item.failedAttempts + 1
-    
-    if item.failedAttempts >= SETTINGS.MAX_FAILED_ATTEMPTS then
-        item.unavailable = true
-    end
-    
+    if item.failedAttempts >= SETTINGS.MAX_FAILED_ATTEMPTS then item.unavailable = true end
     return false
 end
 
 -- ============================================
 -- ОПЛАТА
 -- ============================================
-
 local function pay()
     log("\n💳 ОПЛАТА...")
-    
     local ReplicatedStorage = game:GetService("ReplicatedStorage")
     local confirmPurchase = ReplicatedStorage:FindFirstChild("ShopRemotes", true)
-    if confirmPurchase then
-        confirmPurchase = confirmPurchase:FindFirstChild("ConfirmPurchase")
-    end
-    
+    if confirmPurchase then confirmPurchase = confirmPurchase:FindFirstChild("ConfirmPurchase") end
     if confirmPurchase then
         local ok = pcall(function() confirmPurchase:FireServer() end)
-        if ok then 
-            log("   ✅ RemoteEvent")
-            return true 
-        end
+        if ok then log("   ✅ RemoteEvent"); return true end
     end
-    
     if player:FindFirstChild("PlayerGui") then
         local shopGUI = player.PlayerGui:FindFirstChild("ShopGUI")
         if shopGUI then
@@ -693,24 +597,18 @@ local function pay()
                     VirtualUser:CaptureController()
                     VirtualUser:ClickButton1(Vector2.new(pos.X + size.X/2, pos.Y + size.Y/2))
                 end)
-                if ok then 
-                    log("   ✅ GUI")
-                    return true 
-                end
+                if ok then log("   ✅ GUI"); return true end
             end
         end
     end
-    
-    log("   ❌ Не удалось")
-    return false
+    log("   ❌ Не удалось"); return false
 end
 
 -- ============================================
--- GUI
+-- GUI (полный, как в версии v11.0)
 -- ============================================
-
 local screenGui = Instance.new("ScreenGui")
-screenGui.Name = "AutoBuy_v11_0"
+screenGui.Name = "AutoBuy_v11_1"
 screenGui.ResetOnSpawn = false
 screenGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
 screenGui.Parent = player:WaitForChild("PlayerGui")
@@ -734,10 +632,10 @@ local titleLabel = Instance.new("TextLabel")
 titleLabel.Size = UDim2.new(1, -45, 1, 0)
 titleLabel.Position = UDim2.new(0, 10, 0, 0)
 titleLabel.BackgroundTransparency = 1
-titleLabel.Text = " Автопокупка v11.0 | Суперходьба"
+titleLabel.Text = " Автопокупка v11.1 | Суперходьба + Умные фильтры"
 titleLabel.TextColor3 = Color3.new(1, 1, 1)
 titleLabel.Font = Enum.Font.GothamBold
-titleLabel.TextSize = 16
+titleLabel.TextSize = 14
 titleLabel.TextXAlignment = Enum.TextXAlignment.Left
 titleLabel.Parent = titleBar
 
@@ -1185,9 +1083,8 @@ local function resetAll()
 end
 
 -- ============================================
--- ОПЛАТА
+-- ОПЛАТА (процесс с перемещением)
 -- ============================================
-
 local function goToPay()
     log("\n💰 === НАЧИНАЮ ОПЛАТУ ===")
     addLog("💰 Иду к продавцу...")
@@ -1260,7 +1157,6 @@ end
 -- ============================================
 -- ОСНОВНОЙ ЦИКЛ
 -- ============================================
-
 local function mainLoop()
     log("\n ЗАПУСК ЦИКЛА!")
     
@@ -1280,12 +1176,9 @@ local function mainLoop()
         
         for _, item in ipairs(clothes) do
             if not running then break end
-            if item.taken then continue end
-            if item.unavailable then continue end
+            if item.taken or item.unavailable then continue end
             
-            if not shouldBuyItem(item) then
-                continue
-            end
+            if not shouldBuyItem(item) then continue end
             
             syncCart()
             
@@ -1410,17 +1303,8 @@ updateStats()
 updateList()
 
 print("\n" .. string.rep("=", 80))
-print("✅ Скрипт v11.0 загружен!")
-print("🔥 СУПЕРНАДЁЖНАЯ ХОДЬБА:")
-print("   - Сначала пробует обычный MoveTo")
-print("   - Если не идёт → принудительная телепортация с обходом препятствий")
-print("   - Гарантированно доходит до цели")
-print("🎨 ФИЛЬТРЫ РЕДКОСТИ:")
-for rarity, name in pairs(RARITY_NAMES) do
-    print("   " .. (SETTINGS.RARITY_FILTER[rarity] and "✅" or "❌") .. " " .. name)
-end
-print("💰 ФИЛЬТР ЦЕНЫ: $" .. SETTINGS.MIN_PRICE .. " - $" .. SETTINGS.MAX_PRICE)
+print("✅ Скрипт v11.1 загружен!")
+print("🚀 ГАРАНТИРОВАННАЯ ХОДЬБА")
+print("🎯 УМНЫЕ ФИЛЬТРЫ (смотри консоль для отладки)")
 print("🔄 2 попытки взять предмет")
-print("💰 Гарантированная оплата")
-print("📊 Полная статистика")
 print(string.rep("=", 80) .. "\n")
