@@ -1,4 +1,4 @@
--- 👕 АВТОПОКУПКА v7.5 - ИСПРАВЛЕННЫЙ ПОИСК И ПОЗИЦИОНИРОВАНИЕ
+-- 👕 АВТОПОКУПКА v7.6 - СИНХРОНИЗАЦИЯ + ИСПРАВЛЕННАЯ НАВИГАЦИЯ
 -- GitHub: loadstring(game:HttpGet("https://raw.githubusercontent.com/l9jlevadim-svg/roblox-scripts/main/autobuy.lua"))()
 
 local Workspace = game:GetService("Workspace")
@@ -13,11 +13,11 @@ local humanoid = character:WaitForChild("Humanoid")
 local rootPart = character:WaitForChild("HumanoidRootPart")
 
 print("\n" .. string.rep("=", 60))
-print("👕 АВТОПОКУПКА v7.5 - ИСПРАВЛЕННАЯ")
+print("👕 АВТОПОКУПКА v7.6 - СИНХРОНИЗАЦИЯ + НАВИГАЦИЯ")
 print(string.rep("=", 60) .. "\n")
 
 -- ============================================
--- НАСТРОЙКИ
+-- НАСТROЙКИ
 -- ============================================
 local SETTINGS = {
     MAX_PER_SHOP = 15,
@@ -37,8 +37,10 @@ local SETTINGS = {
     MOVE_INTERVAL = 2,
     MAX_RETRIES = 2,
     RETRY_DELAY = 1,
-    MIN_PROMPT_DISTANCE = 3,  -- ✅ Минимальное расстояние для активации
-    MAX_PROMPT_DISTANCE = 8   -- ✅ Максимальное расстояние для активации
+    MIN_PROMPT_DISTANCE = 3,
+    MAX_PROMPT_DISTANCE = 8,
+    ITEM_OFFSET = 3,         -- ✅ Отступ от предмета (не в стену!)
+    SYNC_CART_ENABLED = true -- ✅ Синхронизация корзины
 }
 
 -- ============================================
@@ -53,6 +55,7 @@ local shopLimits = {}
 local lastTakeTime = 0
 local shopZones = {}
 local lastMoveTime = 0
+local cartGUI = nil          -- ✅ Ссылка на GUI корзины
 
 -- ============================================
 -- ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ
@@ -82,47 +85,183 @@ local function log(message)
 end
 
 -- ============================================
---  УЛУЧШЕННЫЙ ПОИСК ПОЗИЦИИ ПРЕДМЕТА
+-- 🛒 СИНХРОНИЗАЦИЯ КОРЗИНЫ С ИГРОЙ
 -- ============================================
 
-local function findItemPosition(prompt)
-    -- Метод 1: Позиция самого ProximityPrompt
-    if prompt:IsA("BasePart") then
-        return prompt.CFrame.Position
-    end
+local function findCartGUI()
+    if not player:FindFirstChild("PlayerGui") then return nil end
     
-    -- Метод 2: Позиция родителя если это BasePart
-    if prompt.Parent and prompt.Parent:IsA("BasePart") then
-        return prompt.Parent.CFrame.Position
-    end
+    -- Паттерны для поиска GUI корзины
+    local cartPatterns = {"Cart", "Basket", "Корзина", "Inventory", "ShopCart"}
     
-    -- Метод 3: Ищем ближайший BasePart в родителе
-    if prompt.Parent then
-        for _, child in ipairs(prompt.Parent:GetChildren()) do
-            if child:IsA("BasePart") then
-                return child.CFrame.Position
+    for _, gui in ipairs(player.PlayerGui:GetChildren()) do
+        for _, pattern in ipairs(cartPatterns) do
+            if gui.Name:lower():find(pattern:lower()) then
+                log("🛒 Найден GUI корзины: " .. gui.Name)
+                return gui
             end
         end
-    end
-    
-    -- Метод 4: Ищем BasePart выше в иерархии
-    local checkObj = prompt.Parent
-    for i = 1, 4 do
-        if checkObj then
-            if checkObj:IsA("BasePart") then
-                return checkObj.CFrame.Position
+        
+        -- Ищем вложенные элементы
+        for _, child in ipairs(gui:GetDescendants()) do
+            for _, pattern in ipairs(cartPatterns) do
+                if child.Name:lower():find(pattern:lower()) then
+                    log("🛒 Найден элемент корзины: " .. child:GetFullName())
+                    return child
+                end
             end
-            local part = checkObj:FindFirstChildWhichIsA("BasePart")
-            if part then return part.CFrame.Position end
-            checkObj = checkObj.Parent
         end
     end
     
     return nil
 end
 
+local function getRealCartCount()
+    -- Метод 1: Ищем Label с количеством в корзине
+    if not player:FindFirstChild("PlayerGui") then return nil end
+    
+    for _, gui in ipairs(player.PlayerGui:GetDescendants()) do
+        if gui:IsA("TextLabel") or gui:IsA("TextButton") then
+            local text = gui.Text or ""
+            -- Ищем паттерны типа "В корзине: 5" или "Cart: 5"
+            local count = text:match("(%d+)")
+            if count and (text:lower():find("корзин") or 
+                         text:lower():find("cart") or 
+                         text:lower():find("basket") or
+                         text:lower():find("товар")) then
+                return tonumber(count)
+            end
+        end
+    end
+    
+    -- Метод 2: Считаем фреймы в списке корзины
+    local cartFrame = findCartGUI()
+    if cartFrame then
+        local itemsCount = 0
+        for _, child in ipairs(cartFrame:GetDescendants()) do
+            if child:IsA("Frame") and child.Name ~= cartFrame.Name then
+                itemsCount = itemsCount + 1
+            end
+        end
+        if itemsCount > 0 then
+            return math.floor(itemsCount / 2) -- Делим на 2 так как каждый предмет может иметь 2 фрейма
+        end
+    end
+    
+    return nil
+end
+
+local function syncCart()
+    if not SETTINGS.SYNC_CART_ENABLED then return end
+    
+    local realCount = getRealCartCount()
+    if realCount and realCount ~= takenCount then
+        log("🔄 Синхронизация корзины: " .. takenCount .. " → " .. realCount)
+        takenCount = realCount
+        updateStats()
+        
+        -- Если корзина полна - прерываем сбор
+        if takenCount >= SETTINGS.MAX_TOTAL then
+            log("🎯 Корзина полна после синхронизации!")
+            return true -- Возвращаем true если нужно идти к оплате
+        end
+    end
+    
+    return false
+end
+
 -- ============================================
--- 🎯 СОРТИРОВКА ПО БЛИЗОСТИ
+-- ПОИСК МАГАЗИНОВ И ОДЕЖДЫ
+-- ============================================
+
+local function findShops()
+    log("🔍 Поиск магазинов...")
+    shopZones = {}
+    
+    for _, obj in ipairs(Workspace:GetDescendants()) do
+        if obj:IsA("Model") and obj.Name:find("Shop_ShopZone") then
+            shopZones[obj.Name] = true
+        end
+    end
+    
+    log("📊 Всего магазинов: " .. #shopZones)
+end
+
+local function findClothes()
+    log("\n🔍 Поиск одежды...")
+    clothes = {}
+    
+    for _, obj in ipairs(Workspace:GetDescendants()) do
+        if obj:IsA("ProximityPrompt") then
+            local path = obj:GetFullName()
+            local action = obj.ActionText or ""
+            
+            if path:find("Shop_ShopZone") and (action:find("Взять") or action:find("Take")) then
+                local parent = obj.Parent
+                local priceText = ""
+                
+                local searchObj = parent
+                for i = 1, 5 do
+                    if searchObj then
+                        for _, child in ipairs(searchObj:GetChildren()) do
+                            if child:IsA("BillboardGui") then
+                                for _, gui in ipairs(child:GetChildren()) do
+                                    if gui:IsA("TextLabel") then
+                                        priceText = gui.Text
+                                    end
+                                end
+                            end
+                        end
+                        searchObj = searchObj.Parent
+                    end
+                end
+                
+                local position = findPosition(obj) or findPosition(parent)
+                
+                local shopName = "Unknown"
+                for name, _ in pairs(shopZones) do
+                    if path:find(name) then
+                        shopName = name
+                        break
+                    end
+                end
+                
+                local floor = "1 этаж"
+                if position and position.Y > 10 then
+                    floor = "2 этаж"
+                end
+                
+                table.insert(clothes, {
+                    obj = obj,
+                    parent = parent,
+                    name = parent and parent.Name or "Item",
+                    priceText = priceText,
+                    position = position,
+                    shop = shopName,
+                    floor = floor,
+                    taken = false,
+                    unavailable = false,
+                    failedAttempts = 0
+                })
+            end
+            
+            if action:find("Поговорить") or action:find("поговорить") then
+                if not seller then
+                    seller = {
+                        obj = obj,
+                        position = findPosition(obj)
+                    }
+                    log("🏪 Продавец найден")
+                end
+            end
+        end
+    end
+    
+    log("✅ Найдено одежды: " .. #clothes)
+end
+
+-- ============================================
+-- СОРТИРОВКА ПО БЛИЗОСТИ
 -- ============================================
 
 local function sortByDistance()
@@ -137,17 +276,10 @@ local function sortByDistance()
     end)
     
     log("🎯 Отсортировано по близости!")
-    
-    for i, item in ipairs(clothes) do
-        if item.position and i <= 10 then
-            local dist = getDistance(currentPos, item.position)
-            log("   " .. i .. ". " .. item.name .. " [" .. item.shop .. "] - " .. math.floor(dist) .. " студий")
-        end
-    end
 end
 
 -- ============================================
--- ДВИЖЕНИЕ ТЕЛОМ КАЖДЫЕ 2 СЕКУНДЫ
+-- ДВИЖЕНИЕ КАЖДЫЕ 2 СЕКУНДЫ
 -- ============================================
 
 local function doQuickMove()
@@ -166,168 +298,31 @@ local function doQuickMove()
 end
 
 -- ============================================
--- 🔍 УЛУЧШЕННЫЙ ПОИСК МАГАЗИНОВ
+-- ✅ ИСПРАВЛЕННАЯ ХОДЬБА (С ОТСТУПОМ ОТ ПРЕДМЕТА)
 -- ============================================
 
-local function findShops()
-    log("🔍 Поиск магазинов...")
-    shopZones = {}
-    
-    -- Ищем по разным паттернам
-    local patterns = {
-        "Shop_ShopZone",
-        "ShopZone",
-        "Shop_",
-        "ClothingShop",
-        "Store"
-    }
-    
-    for _, obj in ipairs(Workspace:GetDescendants()) do
-        if obj:IsA("Model") then
-            for _, pattern in ipairs(patterns) do
-                if obj.Name:find(pattern) then
-                    if not shopZones[obj.Name] then
-                        shopZones[obj.Name] = true
-                        log("  🏪 Найден: " .. obj.Name)
-                    end
-                    break
-                end
-            end
-        end
-    end
-    
-    log("📊 Всего магазинов: " .. #shopZones)
-end
-
--- ============================================
---  УЛУЧШЕННЫЙ ПОИСК ОДЕЖДЫ
--- ============================================
-
-local function findClothes()
-    log("\n🔍 Поиск одежды...")
-    clothes = {}
-    
-    local foundCount = 0
-    local skippedCount = 0
-    
-    for _, obj in ipairs(Workspace:GetDescendants()) do
-        if obj:IsA("ProximityPrompt") then
-            local path = obj:GetFullName()
-            local action = obj.ActionText or ""
-            
-            -- Проверяем что это в магазине
-            local inShop = false
-            for shopName, _ in pairs(shopZones) do
-                if path:find(shopName) then
-                    inShop = true
-                    break
-                end
-            end
-            
-            -- Также проверяем по ключевым словам
-            if not inShop then
-                if path:find("Shop") or path:find("Store") or path:find("Clothing") then
-                    inShop = true
-                end
-            end
-            
-            if inShop and (action:find("Взять") or action:find("Take")) then
-                local parent = obj.Parent
-                local priceText = ""
-                
-                -- Ищем цену
-                local searchObj = parent
-                for i = 1, 5 do
-                    if searchObj then
-                        for _, child in ipairs(searchObj:GetChildren()) do
-                            if child:IsA("BillboardGui") then
-                                for _, gui in ipairs(child:GetChildren()) do
-                                    if gui:IsA("TextLabel") then
-                                        priceText = gui.Text
-                                    end
-                                end
-                            end
-                        end
-                        searchObj = searchObj.Parent
-                    end
-                end
-                
-                --  ВАЖНО: Ищем правильную позицию
-                local position = findItemPosition(obj)
-                
-                if not position then
-                    log("⚠️  Не удалось найти позицию для: " .. (parent and parent.Name or "Unknown"))
-                    skippedCount = skippedCount + 1
-                    continue
-                end
-                
-                local shopName = "Unknown"
-                for name, _ in pairs(shopZones) do
-                    if path:find(name) then
-                        shopName = name
-                        break
-                    end
-                end
-                
-                local floor = "1 этаж"
-                if position.Y > 10 then
-                    floor = "2 этаж"
-                end
-                
-                table.insert(clothes, {
-                    obj = obj,
-                    parent = parent,
-                    name = parent and parent.Name or "Item",
-                    priceText = priceText,
-                    position = position,
-                    shop = shopName,
-                    floor = floor,
-                    taken = false,
-                    unavailable = false,
-                    failedAttempts = 0
-                })
-                
-                foundCount = foundCount + 1
-                
-                -- Логируем первые 10 найденных
-                if foundCount <= 10 then
-                    log("  ✅ " .. parent.Name .. " | " .. shopName .. " | " .. floor .. " | " .. priceText)
-                    log("     Позиция: " .. tostring(position))
-                end
-            end
-            
-            if action:find("Поговорить") or action:find("поговорить") then
-                if not seller then
-                    seller = {
-                        obj = obj,
-                        position = findPosition(obj)
-                    }
-                    log("🏪 Продавец найден")
-                end
-            end
-        end
-    end
-    
-    log("✅ Найдено одежды: " .. foundCount)
-    if skippedCount > 0 then
-        log("️  Пропущено (нет позиции): " .. skippedCount)
-    end
-end
-
--- ============================================
--- ХОДЬБА
--- ============================================
-
-local function walkTo(targetPos)
+local function walkTo(targetPos, offsetDistance)
     if not targetPos or not humanoid or not rootPart then
         log("❌ walkTo: ошибка параметров")
         return false
     end
     
-    local startPos = rootPart.Position
-    local totalDistance = getDistance(startPos, targetPos)
+    -- ✅ ОТСТУП от цели (не идти прямо в предмет!)
+    offsetDistance = offsetDistance or SETTINGS.ITEM_OFFSET
     
-    log("🚶 Иду: " .. math.floor(totalDistance) .. " студий")
+    local startPos = rootPart.Position
+    local direction = (targetPos - startPos)
+    if direction.Magnitude > 0 then
+        direction = direction.Unit
+    else
+        direction = Vector3.new(1, 0, 0)
+    end
+    
+    -- Цель с отступом (останавливаемся ДО предмета)
+    local actualTarget = targetPos - (direction * offsetDistance)
+    
+    local totalDistance = getDistance(startPos, actualTarget)
+    log("🚶 Иду: " .. math.floor(totalDistance) .. " студий (отступ " .. offsetDistance .. ")")
     
     local originalWalkSpeed = humanoid.WalkSpeed
     local originalJumpPower = humanoid.JumpPower
@@ -343,12 +338,12 @@ local function walkTo(targetPos)
     })
     
     local success = pcall(function()
-        path:ComputeAsync(startPos, targetPos)
+        path:ComputeAsync(startPos, actualTarget)
     end)
     
     if not success then
-        log("⚠️  Ошибка пути, иду напрямик...")
-        humanoid:MoveTo(targetPos)
+        log("⚠️  Ошибка пути")
+        humanoid:MoveTo(actualTarget)
         local reached = humanoid.MoveToFinished:Wait(SETTINGS.MOVE_TIMEOUT)
         humanoid.WalkSpeed = originalWalkSpeed
         humanoid.JumpPower = originalJumpPower
@@ -356,8 +351,8 @@ local function walkTo(targetPos)
     end
     
     if path.Status ~= Enum.PathStatus.Success then
-        log("️  Путь не найден")
-        humanoid:MoveTo(targetPos)
+        log("⚠️  Путь не найден")
+        humanoid:MoveTo(actualTarget)
         local reached = humanoid.MoveToFinished:Wait(SETTINGS.MOVE_TIMEOUT)
         humanoid.WalkSpeed = originalWalkSpeed
         humanoid.JumpPower = originalJumpPower
@@ -374,12 +369,9 @@ local function walkTo(targetPos)
             return false
         end
         
-        log("   Точка " .. i .. "/" .. #waypoints)
-        
         humanoid:MoveTo(waypoint.Position)
         
         if waypoint.Action == Enum.PathWaypointAction.Jump then
-            log("   ⬆️ Прыжок!")
             humanoid:ChangeState(Enum.HumanoidStateType.Jumping)
         end
         
@@ -405,10 +397,11 @@ local function walkTo(targetPos)
                 if moved < SETTINGS.STUCK_DISTANCE then
                     totalStuckTime = totalStuckTime + SETTINGS.STUCK_CHECK_INTERVAL
                     
-                    if totalStuckTime >= SETTINGS.STUCK_TIME and totalStuckTime < SETTINGS.STUCK_TIME + 1 then
-                        log("    Прыжок от застревания...")
+                    if totalStuckTime >= SETTINGS.STUCK_TIME then
+                        log("   🦘 Прыжок от застревания...")
                         humanoid:ChangeState(Enum.HumanoidStateType.Jumping)
                         task.wait(0.5)
+                        totalStuckTime = 0
                     end
                 else
                     totalStuckTime = 0
@@ -427,14 +420,8 @@ local function walkTo(targetPos)
         task.wait(0.15)
     end
     
-    local finalDist = getDistance(rootPart.Position, targetPos)
+    local finalDist = getDistance(rootPart.Position, actualTarget)
     log("📍 Финальное расстояние: " .. math.floor(finalDist))
-    
-    if finalDist > SETTINGS.STOP_DISTANCE then
-        log("🚶 Подхожу ближе...")
-        humanoid:MoveTo(targetPos)
-        humanoid.MoveToFinished:Wait(10)
-    end
     
     humanoid.WalkSpeed = originalWalkSpeed
     humanoid.JumpPower = originalJumpPower
@@ -444,7 +431,7 @@ local function walkTo(targetPos)
 end
 
 -- ============================================
--- ✅ ПРОВЕРКА РАССТОЯНИЯ ПЕРЕД АКТИВАЦИЕЙ
+-- АКТИВАЦИЯ PROMPT
 -- ============================================
 
 local function activatePrompt(prompt)
@@ -452,26 +439,21 @@ local function activatePrompt(prompt)
     
     log("🔘 Активирую prompt")
     
-    -- 🎯 ВАЖНО: Проверяем расстояние ДО активации
-    local promptPos = findItemPosition(prompt)
+    -- Проверяем расстояние
+    local promptPos = findPosition(prompt)
     if promptPos then
         local dist = getDistance(rootPart.Position, promptPos)
-        log("   Расстояние до предмета: " .. math.floor(dist) .. " студий")
+        log("   Расстояние: " .. math.floor(dist))
         
-        -- Если слишком далеко - подходим
         if dist > SETTINGS.MAX_PROMPT_DISTANCE then
             log("   ⚠️  Далеко! Подхожу...")
-            walkTo(promptPos)
+            walkTo(promptPos, SETTINGS.ITEM_OFFSET)
             task.wait(0.5)
-            
-            -- Проверяем ещё раз после подхода
-            dist = getDistance(rootPart.Position, promptPos)
-            log("   Расстояние после подхода: " .. math.floor(dist) .. " студий")
         end
         
-        -- Если всё ещё далеко - не активируем
+        dist = getDistance(rootPart.Position, promptPos)
         if dist > SETTINGS.MAX_PROMPT_DISTANCE then
-            log("   ❌ Всё ещё далеко, пропускаю")
+            log("   ❌ Всё ещё далеко")
             return false
         end
     end
@@ -491,62 +473,59 @@ local function activatePrompt(prompt)
         log("   ✅ InputHold")
         return true
     else
-        log("   ❌ Ошибка активации")
+        log("   ❌ Ошибка")
         return false
     end
 end
 
 -- ============================================
--- 🔄 ПРОВЕРКА С ПОВТОРНЫМИ ПОПЫТКАМИ
+-- ПОВТОРНЫЕ ПОПЫТКИ ВЗЯТИЯ
 -- ============================================
 
 local function tryTakeItem(item)
-    log(" Пробую взять: " .. item.name)
+    log("🎯 Пробую взять: " .. item.name)
     
     if item.unavailable then
-        log("   ️  Предмет помечен как недоступный, пропускаю")
+        log("   ⏭️  Недоступен, пропускаю")
         return false
     end
     
     if not item.obj or not item.obj.Parent then
-        log("   ❌ Prompt исчез, помечаю как недоступный")
         item.unavailable = true
         return false
     end
     
-    -- 🔄 ПОВТОРНЫЕ ПОПЫТКИ
     for attempt = 1, SETTINGS.MAX_RETRIES do
         if not running then return false end
         
         if attempt > 1 then
-            log("    Попытка #" .. attempt .. " (жду " .. SETTINGS.RETRY_DELAY .. "с)...")
+            log("   🔄 Попытка #" .. attempt)
             task.wait(SETTINGS.RETRY_DELAY)
             
             if not item.obj or not item.obj.Parent then
-                log("   ❌ Prompt исчез во время ожидания")
                 item.unavailable = true
                 return false
             end
         end
         
-        log("   Попытка " .. attempt .. "/" .. SETTINGS.MAX_RETRIES)
-        
         local activated = activatePrompt(item.obj)
         
         if activated then
-            log("   ✅ Успешно взял с попытки #" .. attempt .. "!")
+            log("   ✅ Успех!")
             item.failedAttempts = 0
+            
+            -- 🛒 Синхронизируем корзину после взятия
+            task.wait(0.5) -- Даём время GUI обновиться
+            syncCart()
+            
             return true
         end
-        
-        log("   ❌ Попытка #" .. attempt .. " не удалась")
     end
     
-    log("   ❌ Все " .. SETTINGS.MAX_RETRIES .. " попытки неудачны, пропускаю")
+    log("   ❌ Все попытки неудачны")
     item.failedAttempts = item.failedAttempts + 1
     
     if item.failedAttempts >= SETTINGS.MAX_FAILED_ATTEMPTS then
-        log("   ❌ Слишком много неудачных циклов (" .. item.failedAttempts .. "), помечаю как недоступный")
         item.unavailable = true
     end
     
@@ -587,32 +566,81 @@ local function pay()
         end
     end
     
-    log("    Не удалось")
+    log("   ❌ Не удалось")
     return false
 end
 
 -- ============================================
--- GUI С ДВИГАЕМЫМ ОКНОМ
+-- ФУНКЦИЯ ОПЛАТЫ
+-- ============================================
+
+local function goToPay()
+    if takenCount == 0 then
+        log("❌ Корзина пуста")
+        addLog("❌ Пусто")
+        return
+    end
+    
+    -- 🛒 Финальная синхронизация перед оплатой
+    syncCart()
+    
+    if takenCount == 0 then
+        log("❌ После синхронизации корзина пуста")
+        return
+    end
+    
+    if not seller then
+        log("❌ Продавец не найден!")
+        return
+    end
+    
+    log("\n💰 КОРЗИНА ПОЛНА (" .. takenCount .. ") → ОПЛАТА!")
+    addLog("💰 Иду к продавцу...")
+    statusLabel.Text = "💰 Иду к продавцу..."
+    statusLabel.TextColor3 = Color3.fromRGB(255, 200, 100)
+    
+    if seller.position then
+        walkTo(seller.position, SETTINGS.ITEM_OFFSET)
+        task.wait(0.5)
+    end
+    
+    log("💬 Разговор...")
+    activatePrompt(seller.obj)
+    task.wait(1)
+    
+    log("💳 Оплата...")
+    local paid = pay()
+    
+    if paid then
+        paidCount = paidCount + 1
+        takenCount = 0 -- Обнуляем корзину после оплаты
+        addLog("✅ Оплачено! (" .. paidCount .. ")")
+        updateStats()
+        task.wait(1)
+    else
+        addLog("⚠️  Ошибка оплаты")
+    end
+end
+
+-- ============================================
+-- GUI (сокращённая версия для экономии места)
 -- ============================================
 
 local screenGui = Instance.new("ScreenGui")
-screenGui.Name = "AutoBuy_v7_5"
+screenGui.Name = "AutoBuy_v7_6"
 screenGui.ResetOnSpawn = false
-screenGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
 screenGui.Parent = player:WaitForChild("PlayerGui")
 
 local frame = Instance.new("Frame")
 frame.Size = UDim2.new(0, 650, 0, 750)
 frame.Position = UDim2.new(0, 100, 0, 100)
 frame.BackgroundColor3 = Color3.fromRGB(10, 10, 10)
-frame.BorderSizePixel = 0
 frame.Parent = screenGui
 Instance.new("UICorner", frame).CornerRadius = UDim.new(0, 10)
 
 local titleBar = Instance.new("Frame")
 titleBar.Size = UDim2.new(1, 0, 0, 55)
 titleBar.BackgroundColor3 = Color3.fromRGB(20, 20, 20)
-titleBar.BorderSizePixel = 0
 titleBar.Parent = frame
 Instance.new("UICorner", titleBar).CornerRadius = UDim.new(0, 10)
 
@@ -620,7 +648,7 @@ local titleLabel = Instance.new("TextLabel")
 titleLabel.Size = UDim2.new(1, -45, 1, 0)
 titleLabel.Position = UDim2.new(0, 10, 0, 0)
 titleLabel.BackgroundTransparency = 1
-titleLabel.Text = "👕 Автопокупка v7.5 | Исправленная"
+titleLabel.Text = "👕 Автопокупка v7.6 | Синхронизация"
 titleLabel.TextColor3 = Color3.new(1, 1, 1)
 titleLabel.Font = Enum.Font.GothamBold
 titleLabel.TextSize = 16
@@ -643,62 +671,42 @@ closeBtn.MouseButton1Click:Connect(function()
     screenGui:Destroy()
 end)
 
--- ДВИГАЕМОЕ ОКНО
-local dragging = false
-local dragInput = nil
-local dragStart = nil
-local startPos = nil
+-- Перетаскивание
+local dragging, dragInput, dragStart, startPos = false, nil, nil, nil
 
 local function updateDrag(input)
     if dragging then
         local delta = input.Position - dragStart
-        frame.Position = UDim2.new(
-            startPos.X.Scale,
-            startPos.X.Offset + delta.X,
-            startPos.Y.Scale,
-            startPos.Y.Offset + delta.Y
-        )
+        frame.Position = UDim2.new(startPos.X.Scale, startPos.X.Offset + delta.X, startPos.Y.Scale, startPos.Y.Offset + delta.Y)
     end
 end
 
 titleBar.InputBegan:Connect(function(input)
-    if input.UserInputType == Enum.UserInputType.MouseButton1 or 
-       input.UserInputType == Enum.UserInputType.Touch then
+    if input.UserInputType == Enum.UserInputType.MouseButton1 then
         dragging = true
         dragStart = input.Position
         startPos = frame.Position
-        
         input.Changed:Connect(function()
-            if input.UserInputState == Enum.UserInputState.End then
-                dragging = false
-            end
+            if input.UserInputState == Enum.UserInputState.End then dragging = false end
         end)
     end
 end)
 
 titleBar.InputChanged:Connect(function(input)
-    if input.UserInputType == Enum.UserInputType.MouseMovement or 
-       input.UserInputType == Enum.UserInputType.Touch then
-        dragInput = input
-    end
+    if input.UserInputType == Enum.UserInputType.MouseMovement then dragInput = input end
 end)
 
 UIS.InputChanged:Connect(function(input)
-    if input == dragInput then
-        updateDrag(input)
-    end
+    if input == dragInput then updateDrag(input) end
 end)
 
--- Элементы GUI
+-- GUI элементы
 local filterBox = Instance.new("TextBox")
 filterBox.Size = UDim2.new(1, -20, 0, 40)
 filterBox.Position = UDim2.new(0, 10, 0, 60)
 filterBox.BackgroundColor3 = Color3.fromRGB(30, 30, 30)
 filterBox.TextColor3 = Color3.new(1, 1, 1)
 filterBox.PlaceholderText = "🔍 Фильтр..."
-filterBox.Text = ""
-filterBox.Font = Enum.Font.Gotham
-filterBox.TextSize = 14
 filterBox.Parent = frame
 Instance.new("UICorner", filterBox).CornerRadius = UDim.new(0, 8)
 
@@ -735,7 +743,7 @@ local startBtn = Instance.new("TextButton")
 startBtn.Size = UDim2.new(1, -20, 0, 55)
 startBtn.Position = UDim2.new(0, 10, 0, 170)
 startBtn.BackgroundColor3 = Color3.fromRGB(80, 200, 80)
-startBtn.Text = "▶️ ЗАПУСТИТЬ АВТОПОКУПКУ"
+startBtn.Text = "▶️ ЗАПУСТИТЬ"
 startBtn.TextColor3 = Color3.new(0, 0, 0)
 startBtn.Font = Enum.Font.GothamBold
 startBtn.TextSize = 16
@@ -766,7 +774,7 @@ logLabel.TextYAlignment = Enum.TextYAlignment.Top
 logLabel.Parent = frame
 
 local logText = {}
-local function addLog(msg)
+function addLog(msg)
     table.insert(logText, msg)
     if #logText > 6 then table.remove(logText, 1) end
     logLabel.Text = "📋 Лог:\n" .. table.concat(logText, "\n")
@@ -776,7 +784,6 @@ local scrollFrame = Instance.new("ScrollingFrame")
 scrollFrame.Size = UDim2.new(1, -20, 1, -370)
 scrollFrame.Position = UDim2.new(0, 10, 0, 360)
 scrollFrame.BackgroundColor3 = Color3.fromRGB(20, 20, 20)
-scrollFrame.BorderSizePixel = 0
 scrollFrame.ScrollBarThickness = 6
 scrollFrame.Parent = frame
 Instance.new("UICorner", scrollFrame).CornerRadius = UDim.new(0, 8)
@@ -785,12 +792,12 @@ local listLayout = Instance.new("UIListLayout")
 listLayout.Padding = UDim.new(0, 4)
 listLayout.Parent = scrollFrame
 
-local function updateStats()
+function updateStats()
     takenLabel.Text = "🛒 Взято: " .. takenCount .. " / " .. SETTINGS.MAX_TOTAL
     paidLabel.Text = "💳 Оплачено: " .. paidCount
 end
 
-local function updateList()
+function updateList()
     for _, child in ipairs(scrollFrame:GetChildren()) do
         if child:IsA("Frame") then child:Destroy() end
     end
@@ -798,14 +805,10 @@ local function updateList()
     local filter = filterBox.Text:lower()
     
     for i, item in ipairs(clothes) do
-        local match = filter == "" or 
-                      item.name:lower():find(filter) or 
-                      item.shop:lower():find(filter)
-        
+        local match = filter == "" or item.name:lower():find(filter) or item.shop:lower():find(filter)
         if match then
             local itemFrame = Instance.new("Frame")
             itemFrame.Size = UDim2.new(1, -10, 0, 50)
-            
             if item.taken then
                 itemFrame.BackgroundColor3 = Color3.fromRGB(40, 80, 40)
             elseif item.unavailable then
@@ -813,23 +816,19 @@ local function updateList()
             else
                 itemFrame.BackgroundColor3 = Color3.fromRGB(35, 35, 35)
             end
-            
             itemFrame.LayoutOrder = i
             itemFrame.Parent = scrollFrame
             Instance.new("UICorner", itemFrame).CornerRadius = UDim.new(0, 8)
             
-            local shopLimit = shopLimits[item.shop] or 0
-            local limitText = shopLimit >= SETTINGS.MAX_PER_SHOP and " [🔒 ЛИМИТ]" or ""
-            local unavailableText = item.unavailable and " [❌ КУПЛЕНО]" or ""
+            local limitText = (shopLimits[item.shop] or 0) >= SETTINGS.MAX_PER_SHOP and " [🔒]" or ""
+            local unavailText = item.unavailable and " [❌]" or ""
             
             local nameLabel = Instance.new("TextLabel")
             nameLabel.Size = UDim2.new(1, -10, 0, 24)
             nameLabel.Position = UDim2.new(0, 10, 0, 3)
             nameLabel.BackgroundTransparency = 1
-            nameLabel.Text = (item.taken and "✅ " or "📦 ") .. item.name .. unavailableText
-            nameLabel.TextColor3 = item.taken and 
-                Color3.fromRGB(100, 255, 100) or 
-                (item.unavailable and Color3.fromRGB(255, 100, 100) or Color3.new(1, 1, 1))
+            nameLabel.Text = (item.taken and "✅ " or "📦 ") .. item.name .. unavailText
+            nameLabel.TextColor3 = item.taken and Color3.fromRGB(100, 255, 100) or (item.unavailable and Color3.fromRGB(255, 100, 100) or Color3.new(1, 1, 1))
             nameLabel.Font = Enum.Font.GothamBold
             nameLabel.TextSize = 12
             nameLabel.TextXAlignment = Enum.TextXAlignment.Left
@@ -851,7 +850,7 @@ local function updateList()
     scrollFrame.CanvasSize = UDim2.new(0, 0, 0, listLayout.AbsoluteContentSize.Y + 10)
 end
 
-local function resetAll()
+function resetAll()
     for _, item in ipairs(clothes) do
         item.taken = false
         item.unavailable = false
@@ -861,60 +860,11 @@ local function resetAll()
     takenCount = 0
     lastTakeTime = 0
     lastMoveTime = tick()
-    addLog("🔄 Сброс счетчиков")
+    addLog("🔄 Сброс")
     updateList()
-end
-
--- ============================================
--- БЫСТРАЯ ФУНКЦИЯ ОПЛАТЫ
--- ============================================
-
-local function goToPay()
-    if takenCount == 0 then
-        log("❌ Корзина пуста, оплата не нужна")
-        addLog("❌ Пусто")
-        return
-    end
     
-    if not seller then
-        log("❌ Продавец не найден!")
-        addLog("❌ Нет продавца")
-        return
-    end
-    
-    log("\n💰 КОРЗИНА ПОЛНА (" .. takenCount .. "/" .. SETTINGS.MAX_TOTAL .. ") → БЫСТРАЯ ОПЛАТА!")
-    addLog("💰 Иду оплачивать " .. takenCount .. " товаров!")
-    statusLabel.Text = "💰 Иду к продавцу..."
-    statusLabel.TextColor3 = Color3.fromRGB(255, 200, 100)
-    
-    if seller.position then
-        walkTo(seller.position)
-        task.wait(0.5)
-    end
-    
-    log("💬 Разговор с продавцом...")
-    addLog("💬 Говорю...")
-    statusLabel.Text = "💬 Разговор..."
-    
-    activatePrompt(seller.obj)
-    task.wait(1)
-    
-    log("💳 Оплата...")
-    addLog("💳 Оплачиваю...")
-    statusLabel.Text = " Оплата..."
-    
-    local paid = pay()
-    
-    if paid then
-        paidCount = paidCount + 1
-        log("✅ Оплачено! Всего оплат: " .. paidCount)
-        addLog("✅ Оплачено! (" .. paidCount .. ")")
-        updateStats()
-        task.wait(1)
-    else
-        log("⚠️  Не удалось оплатить")
-        addLog("️  Ошибка оплаты")
-    end
+    -- 🛒 Синхронизация после сброса
+    syncCart()
 end
 
 -- ============================================
@@ -922,41 +872,46 @@ end
 -- ============================================
 
 local function mainLoop()
-    log("\n🎬 ЗАПУСК ОСНОВНОГО ЦИКЛА!")
+    log("\n🎬 ЗАПУСК ЦИКЛА!")
     
     while running do
         resetAll()
-        
-        log("\n🎯 Сортировка магазинов по близости...")
-        addLog("🎯 Сортировка...")
         sortByDistance()
         updateList()
         
-        addLog("🔄 Новый цикл начался!")
-        statusLabel.Text = "🔄 Начинаю с ближайшего магазина..."
+        addLog("🔄 Новый цикл!")
+        statusLabel.Text = "🔄 Начинаю..."
         statusLabel.TextColor3 = Color3.fromRGB(255, 200, 100)
         
         local shouldPay = false
+        local itemsChecked = 0
         
         for _, item in ipairs(clothes) do
             if not running then break end
-            if item.taken then continue end
+            if item.taken or item.unavailable then continue end
             
-            if item.unavailable then
-                log("⏭️  Пропускаю " .. item.name .. " (куплено другим)")
-                continue
+            -- ✅ СИНХРОНИЗАЦИЯ: проверяем корзину ПЕРЕД каждой вещью
+            if syncCart() then
+                shouldPay = true
+                break
             end
             
             if takenCount >= SETTINGS.MAX_TOTAL then
-                log("\n🎯 КОРЗИНА ПОЛНА! (" .. takenCount .. "/" .. SETTINGS.MAX_TOTAL .. ")")
+                log("\n🎯 ЛИМИТ ДОСТИГНУТ!")
                 shouldPay = true
                 break
             end
             
             local shopCount = shopLimits[item.shop] or 0
-            if shopCount >= SETTINGS.MAX_PER_SHOP then
-                log("⏭️  " .. item.shop .. " - лимит магазина")
-                continue
+            if shopCount >= SETTINGS.MAX_PER_SHOP then continue end
+            
+            itemsChecked = itemsChecked + 1
+            
+            -- Если проверили много предметов и не смогли взять - идём к кассе
+            if itemsChecked > 10 and takenCount > 0 then
+                log("🎯 Проверено много предметов, иду к кассе...")
+                shouldPay = true
+                break
             end
             
             local waitTime = SETTINGS.DELAY_ITEMS - (tick() - lastTakeTime)
@@ -971,18 +926,16 @@ local function mainLoop()
             
             if not running then break end
             
-            log("\n🎯 Цель: " .. item.name .. " [" .. item.shop .. " " .. item.floor .. "]")
             addLog("🚶 " .. item.name)
-            statusLabel.Text = "🚶 " .. item.name .. " (" .. item.shop .. ")"
+            statusLabel.Text = "🚶 " .. item.name
             
             if item.position then
-                walkTo(item.position)
+                walkTo(item.position, SETTINGS.ITEM_OFFSET)
                 task.wait(0.5)
             end
             
-            log("🤖 Пробую взять...")
             addLog("🤖 Беру...")
-            statusLabel.Text = "🤖 Беру " .. item.name .. "..."
+            statusLabel.Text = "🤖 Беру " .. item.name
             
             local success = tryTakeItem(item)
             
@@ -992,96 +945,65 @@ local function mainLoop()
                 shopLimits[item.shop] = (shopLimits[item.shop] or 0) + 1
                 lastTakeTime = tick()
                 
-                local currentShopCount = shopLimits[item.shop]
-                log("✅ Взял! " .. item.name .. " [" .. takenCount .. "/" .. SETTINGS.MAX_TOTAL .. "]")
                 addLog("✅ " .. item.name .. " (" .. takenCount .. "/" .. SETTINGS.MAX_TOTAL .. ")")
-                
                 updateStats()
                 updateList()
                 
+                -- ✅ ПРОВЕРКА: если лимит достигнут - идём к кассе
                 if takenCount >= SETTINGS.MAX_TOTAL then
-                    log("\n🎯 ДОСТИГНУТ ЛИМИТ КОРЗИНЫ!")
+                    log("\n🎯 ЛИМИТ ДОСТИГНУТ! Иду к кассе...")
                     shouldPay = true
                     break
                 end
             else
-                log("❌ Не удалось взять: " .. item.name)
-                addLog("❌ " .. item.name .. " (пропуск)")
+                addLog("❌ " .. item.name)
             end
             
             task.wait(0.5)
         end
         
-        if shouldPay or takenCount > 0 then
-            goToPay()
-            
-            if running then
-                log("\n🎯 Пересортировка после оплаты...")
-                addLog("🎯 Ищу ближайший магазин...")
-                sortByDistance()
-                updateList()
-            end
-        else
-            log("❌ Ничего не взял в этом цикле")
-            addLog(" Пусто")
+        -- ✅ ВАЖНО: если взяли хотя бы что-то и не можем больше - идём к кассе
+        if not shouldPay and takenCount > 0 then
+            log("🎯 Ничего больше не могу взять, иду к кассе...")
+            shouldPay = true
         end
         
-        log("\n⏳ Ожидание обновления магазина (10 минут)...")
+        if shouldPay or takenCount > 0 then
+            goToPay()
+            sortByDistance()
+            updateList()
+        else
+            addLog("❌ Пусто")
+        end
+        
         addLog("⏳ Жду 10 мин...")
-        statusLabel.Text = "⏳ Ожидание обновления..."
+        statusLabel.Text = "⏳ Ожидание..."
         statusLabel.TextColor3 = Color3.fromRGB(150, 150, 255)
         
         for i = 1, SETTINGS.REFRESH_TIME do
             if not running then break end
-            
-            local mins = math.floor((SETTINGS.REFRESH_TIME - i) / 60)
-            local secs = (SETTINGS.REFRESH_TIME - i) % 60
-            
-            if i % 30 == 0 then
-                log("   Осталось: " .. mins .. "м " .. secs .. "с")
-            end
-            
-            if i % 2 == 0 then
-                doQuickMove()
-            end
-            
+            if i % 2 == 0 then doQuickMove() end
             task.wait(1)
         end
-        
-        log("🔄 Магазин обновился! Новый цикл...\n")
     end
     
     running = false
-    startBtn.Text = "▶️ ЗАПУСТИТЬ АВТОПОКУПКУ"
+    startBtn.Text = "▶️ ЗАПУСТИТЬ"
     startBtn.BackgroundColor3 = Color3.fromRGB(80, 200, 80)
     addLog("⏹️ Остановлено")
-    statusLabel.Text = "⏹️ Остановлено"
-    statusLabel.TextColor3 = Color3.fromRGB(200, 200, 200)
-    
-    log("\n👋 Скрипт остановлен")
 end
-
--- ============================================
--- КНОПКА СТАРТ/СТОП
--- ============================================
 
 startBtn.MouseButton1Click:Connect(function()
     if running then
-        log("\n⏹️ Остановка скрипта...")
         running = false
-        startBtn.Text = "▶️ ЗАПУСТИТЬ АВТОПОКУПКУ"
+        startBtn.Text = "▶️ ЗАПУСТИТЬ"
         startBtn.BackgroundColor3 = Color3.fromRGB(80, 200, 80)
     else
-        log("\n▶️ Запуск скрипта...")
         running = true
-        startBtn.Text = "⏹️ ОСТАНОВИТЬ"
+        startBtn.Text = "⏹️ СТОП"
         startBtn.BackgroundColor3 = Color3.fromRGB(220, 50, 50)
-        
-        log("\n🎯 Сортировка магазинов по близости...")
-        addLog("🎯 Ищу ближайший магазин...")
         sortByDistance()
         updateList()
-        
         task.spawn(mainLoop)
     end
 end)
@@ -1096,22 +1018,21 @@ end)
 
 findShops()
 findClothes()
-
-log("\n🎯 Начальная сортировка по близости...")
 sortByDistance()
-
 updateStats()
 updateList()
 
+-- Ищем GUI корзины при запуске
+cartGUI = findCartGUI()
+if cartGUI then
+    log("🛒 GUI корзины найден: " .. cartGUI.Name)
+else
+    log("⚠️  GUI корзины не найден, синхронизация может не работать")
+end
+
 print("\n" .. string.rep("=", 60))
-print("✅ Скрипт v7.5 успешно загружен!")
-print("📊 Найдено магазинов: " .. #shopZones)
-print(" Найдено одежды: " .. #clothes)
-print("🎯 Отсортировано по близости!")
-print("🔄 Повторные попытки: " .. SETTINGS.MAX_RETRIES .. " раза с задержкой " .. SETTINGS.RETRY_DELAY .. "с")
-print("❌ Макс неудачных циклов: " .. SETTINGS.MAX_FAILED_ATTEMPTS)
-print("🎯 После " .. SETTINGS.MAX_TOTAL .. " товаров → оплата!")
-print("🏃 Движение каждые " .. SETTINGS.MOVE_INTERVAL .. " сек")
-print("⚡ Быстрая оплата")
-print("🖱️  ОКНО МОЖНО ПЕРЕТАСКИВАТЬ за заголовок!")
+print("✅ Скрипт v7.6 загружен!")
+print("🛒 Синхронизация корзины: " .. (SETTINGS.SYNC_CART_ENABLED and "ВКЛ" or "ВЫКЛ"))
+print("📊 Магазинов: " .. #shopZones .. " | Вещей: " .. #clothes)
+print("🎯 Отступ от предмета: " .. SETTINGS.ITEM_OFFSET .. " студий")
 print(string.rep("=", 60) .. "\n")
