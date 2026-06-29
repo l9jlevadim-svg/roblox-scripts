@@ -1,8 +1,9 @@
--- 👕 АВТОПОКУПКА v7.2 - СОРТИРОВКА ПО БЛИЗОСТИ
+-- 👕 АВТОПОКУПКА v7.3 - ПОЛНАЯ ВЕРСИЯ
 -- GitHub: loadstring(game:HttpGet("https://raw.githubusercontent.com/l9jlevadim-svg/roblox-scripts/main/autobuy.lua"))()
 -- ✅ Двигаемое окно | ✅ Идеальная ходьба | ✅ Пропуск купленных другими
 -- ✅ Движение каждые 2 сек | ✅ Быстрая оплата
--- ✅ Сортировка по ближайшим магазинам | ✅ При запуске идёт в ближайший
+-- ✅ Сортировка по ближайшим магазинам
+-- ✅ Повторные попытки взятия (2 раза с задержкой 1 сек)
 
 local Workspace = game:GetService("Workspace")
 local Players = game:GetService("Players")
@@ -16,10 +17,8 @@ local humanoid = character:WaitForChild("Humanoid")
 local rootPart = character:WaitForChild("HumanoidRootPart")
 
 print("\n" .. string.rep("=", 60))
-print("👕 АВТОПОКУПКА v7.2 - СОРТИРОВКА ПО БЛИЗОСТИ")
-print("✅ Пропускает купленные другими | ✅ Двигаемое окно")
-print("✅ Движение каждые 2 сек | ✅ Быстрая оплата")
-print("✅ Сортировка по ближайшим магазинам")
+print(" АВТОПОКУПКА v7.3 - ПОЛНАЯ ВЕРСИЯ")
+print("✅ Все функции включены")
 print(string.rep("=", 60) .. "\n")
 
 -- ============================================
@@ -41,7 +40,9 @@ local SETTINGS = {
     MOVE_TIMEOUT = 25,
     TAKE_TIMEOUT = 5,
     MAX_FAILED_ATTEMPTS = 2,
-    MOVE_INTERVAL = 2
+    MOVE_INTERVAL = 2,
+    MAX_RETRIES = 2,        -- ✅ Повторные попытки
+    RETRY_DELAY = 1         -- ✅ Задержка между попытками
 }
 
 -- ============================================
@@ -85,7 +86,7 @@ local function log(message)
 end
 
 -- ============================================
--- 🎯 НОВАЯ ФУНКЦИЯ: СОРТИРОВКА ПО БЛИЗОСТИ
+-- 🎯 СОРТИРОВКА ПО БЛИЗОСТИ
 -- ============================================
 
 local function sortByDistance()
@@ -93,7 +94,6 @@ local function sortByDistance()
     
     local currentPos = rootPart.Position
     
-    -- Сортируем таблицу clothes по расстоянию от текущей позиции
     table.sort(clothes, function(a, b)
         local distA = a.position and getDistance(currentPos, a.position) or math.huge
         local distB = b.position and getDistance(currentPos, b.position) or math.huge
@@ -102,13 +102,10 @@ local function sortByDistance()
     
     log("🎯 Отсортировано по близости!")
     
-    -- Показываем порядок
     for i, item in ipairs(clothes) do
-        if item.position then
+        if item.position and i <= 5 then
             local dist = getDistance(currentPos, item.position)
-            if i <= 5 then  -- Показываем только первые 5
-                log("   " .. i .. ". " .. item.name .. " [" .. item.shop .. "] - " .. math.floor(dist) .. " студий")
-            end
+            log("   " .. i .. ". " .. item.name .. " [" .. item.shop .. "] - " .. math.floor(dist) .. " студий")
         end
     end
 end
@@ -287,7 +284,7 @@ local function walkTo(targetPos)
         humanoid:MoveTo(waypoint.Position)
         
         if waypoint.Action == Enum.PathWaypointAction.Jump then
-            log("   ⬆️ Прыжок!")
+            log("   ️ Прыжок!")
             humanoid:ChangeState(Enum.HumanoidStateType.Jumping)
         end
         
@@ -352,7 +349,7 @@ local function walkTo(targetPos)
 end
 
 -- ============================================
--- АКТИВАЦИЯ PROMPT С ТАЙМАУТОМ
+-- АКТИВАЦИЯ PROMPT
 -- ============================================
 
 local function activatePrompt(prompt)
@@ -391,14 +388,14 @@ local function activatePrompt(prompt)
 end
 
 -- ============================================
--- ПРОВЕРКА ДОСТУПНОСТИ ПРЕДМЕТА
+-- 🔄 ПРОВЕРКА С ПОВТОРНЫМИ ПОПЫТКАМИ
 -- ============================================
 
 local function tryTakeItem(item)
     log("🎯 Пробую взять: " .. item.name)
     
     if item.unavailable then
-        log("   ⏭️  Предмет помечен как недоступный, пропускаю")
+        log("   ️  Предмет помечен как недоступный, пропускаю")
         return false
     end
     
@@ -408,27 +405,39 @@ local function tryTakeItem(item)
         return false
     end
     
-    local startTime = tick()
-    local activated = false
-    
-    while tick() - startTime < SETTINGS.TAKE_TIMEOUT do
+    -- 🔄 ПОВТОРНЫЕ ПОПЫТКИ
+    for attempt = 1, SETTINGS.MAX_RETRIES do
         if not running then return false end
         
-        activated = activatePrompt(item.obj)
+        if attempt > 1 then
+            log("   🔄 Попытка #" .. attempt .. " (жду " .. SETTINGS.RETRY_DELAY .. "с)...")
+            task.wait(SETTINGS.RETRY_DELAY)
+            
+            if not item.obj or not item.obj.Parent then
+                log("    Prompt исчез во время ожидания")
+                item.unavailable = true
+                return false
+            end
+        end
+        
+        log("   Попытка " .. attempt .. "/" .. SETTINGS.MAX_RETRIES)
+        
+        local activated = activatePrompt(item.obj)
         
         if activated then
-            log("   ✅ Успешно взял!")
+            log("   ✅ Успешно взял с попытки #" .. attempt .. "!")
+            item.failedAttempts = 0
             return true
         end
         
-        task.wait(1)
+        log("    Попытка #" .. attempt .. " не удалась")
     end
     
-    log("   ⚠️  Таймаут попытки взять (" .. SETTINGS.TAKE_TIMEOUT .. "с)")
+    log("    Все " .. SETTINGS.MAX_RETRIES .. " попытки неудачны, пропускаю")
     item.failedAttempts = item.failedAttempts + 1
     
     if item.failedAttempts >= SETTINGS.MAX_FAILED_ATTEMPTS then
-        log("   ❌ Слишком много неудачных попыток (" .. item.failedAttempts .. "), помечаю как недоступный")
+        log("   ❌ Слишком много неудачных циклов (" .. item.failedAttempts .. "), помечаю как недоступный")
         item.unavailable = true
     end
     
@@ -478,7 +487,7 @@ end
 -- ============================================
 
 local screenGui = Instance.new("ScreenGui")
-screenGui.Name = "AutoBuy_v7_2"
+screenGui.Name = "AutoBuy_v7_3"
 screenGui.ResetOnSpawn = false
 screenGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
 screenGui.Parent = player:WaitForChild("PlayerGui")
@@ -502,7 +511,7 @@ local titleLabel = Instance.new("TextLabel")
 titleLabel.Size = UDim2.new(1, -45, 1, 0)
 titleLabel.Position = UDim2.new(0, 10, 0, 0)
 titleLabel.BackgroundTransparency = 1
-titleLabel.Text = "👕 Автопокупка v7.2 | Сортировка по близости"
+titleLabel.Text = "👕 Автопокупка v7.3 | Полная версия"
 titleLabel.TextColor3 = Color3.new(1, 1, 1)
 titleLabel.Font = Enum.Font.GothamBold
 titleLabel.TextSize = 16
@@ -639,7 +648,7 @@ local logLabel = Instance.new("TextLabel")
 logLabel.Size = UDim2.new(1, -20, 0, 90)
 logLabel.Position = UDim2.new(0, 10, 0, 265)
 logLabel.BackgroundTransparency = 1
-logLabel.Text = "📋 Лог:"
+logLabel.Text = " Лог:"
 logLabel.TextColor3 = Color3.fromRGB(180, 180, 180)
 logLabel.Font = Enum.Font.Code
 logLabel.TextSize = 11
@@ -759,7 +768,7 @@ local function goToPay()
     end
     
     if not seller then
-        log("❌ Продавец не найден!")
+        log(" Продавец не найден!")
         addLog("❌ Нет продавца")
         return
     end
@@ -800,7 +809,7 @@ local function goToPay()
 end
 
 -- ============================================
--- 🎯 ОСНОВНОЙ ЦИКЛ (С СОРТИРОВКОЙ)
+-- ОСНОВНОЙ ЦИКЛ
 -- ============================================
 
 local function mainLoop()
@@ -809,8 +818,7 @@ local function mainLoop()
     while running do
         resetAll()
         
-        -- 🎯 СОРТИРОВКА ПО БЛИЗОСТИ В НАЧАЛЕ ЦИКЛА
-        log("\n🎯 Сортировка магазинов по близости...")
+        log("\n Сортировка магазинов по близости...")
         addLog("🎯 Сортировка...")
         sortByDistance()
         updateList()
@@ -831,7 +839,7 @@ local function mainLoop()
             end
             
             if takenCount >= SETTINGS.MAX_TOTAL then
-                log("\n🎯 КОРЗИНА ПОЛНА! (" .. takenCount .. "/" .. SETTINGS.MAX_TOTAL .. ")")
+                log("\n КОРЗИНА ПОЛНА! (" .. takenCount .. "/" .. SETTINGS.MAX_TOTAL .. ")")
                 shouldPay = true
                 break
             end
@@ -842,7 +850,6 @@ local function mainLoop()
                 continue
             end
             
-            -- Задержка с движением каждые 2 сек
             local waitTime = SETTINGS.DELAY_ITEMS - (tick() - lastTakeTime)
             if waitTime > 0 then
                 local waitStart = tick()
@@ -899,7 +906,6 @@ local function mainLoop()
         if shouldPay or takenCount > 0 then
             goToPay()
             
-            -- 🎯 ПОСЛЕ ОПЛАТЫ СНОВА СОРТИРУЕМ ПО БЛИЗОСТИ
             if running then
                 log("\n🎯 Пересортировка после оплаты...")
                 addLog("🎯 Ищу ближайший магазин...")
@@ -913,7 +919,7 @@ local function mainLoop()
         
         log("\n⏳ Ожидание обновления магазина (10 минут)...")
         addLog("⏳ Жду 10 мин...")
-        statusLabel.Text = "⏳ Ожидание обновления..."
+        statusLabel.Text = " Ожидание обновления..."
         statusLabel.TextColor3 = Color3.fromRGB(150, 150, 255)
         
         for i = 1, SETTINGS.REFRESH_TIME do
@@ -939,7 +945,7 @@ local function mainLoop()
     running = false
     startBtn.Text = "▶️ ЗАПУСТИТЬ АВТОПОКУПКУ"
     startBtn.BackgroundColor3 = Color3.fromRGB(80, 200, 80)
-    addLog("⏹️ Остановлено")
+    addLog("️ Остановлено")
     statusLabel.Text = "⏹️ Остановлено"
     statusLabel.TextColor3 = Color3.fromRGB(200, 200, 200)
     
@@ -962,7 +968,6 @@ startBtn.MouseButton1Click:Connect(function()
         startBtn.Text = "⏹️ ОСТАНОВИТЬ"
         startBtn.BackgroundColor3 = Color3.fromRGB(220, 50, 50)
         
-        -- 🎯 ПРИ ЗАПУСКЕ СРАЗУ СОРТИРУЕМ ПО БЛИЗОСТИ
         log("\n🎯 Сортировка магазинов по близости...")
         addLog("🎯 Ищу ближайший магазин...")
         sortByDistance()
@@ -983,7 +988,6 @@ end)
 findShops()
 findClothes()
 
--- 🎯 СОРТИРОВКА ПРИ ЗАГРУЗКЕ
 log("\n🎯 Начальная сортировка по близости...")
 sortByDistance()
 
@@ -991,14 +995,14 @@ updateStats()
 updateList()
 
 print("\n" .. string.rep("=", 60))
-print("✅ Скрипт успешно загружен!")
+print("✅ Скрипт v7.3 успешно загружен!")
 print("📊 Найдено магазинов: " .. #shopZones)
 print("📊 Найдено одежды: " .. #clothes)
 print("🎯 Отсортировано по близости!")
+print("🔄 Повторные попытки: " .. SETTINGS.MAX_RETRIES .. " раза с задержкой " .. SETTINGS.RETRY_DELAY .. "с")
 print("⏱️  Таймаут на предмет: " .. SETTINGS.TAKE_TIMEOUT .. " сек")
-print("❌ Макс неудачных попыток: " .. SETTINGS.MAX_FAILED_ATTEMPTS)
 print("🎯 После " .. SETTINGS.MAX_TOTAL .. " товаров → оплата!")
 print("🏃 Движение каждые " .. SETTINGS.MOVE_INTERVAL .. " сек")
-print("⚡ Быстрая оплата (1 сек вместо 3)")
-print("🖱️  ОКНО МОЖНО ПЕРЕТАСКИВАТЬ за заголовок!")
+print(" Быстрая оплата")
+print("️  ОКНО МОЖНО ПЕРЕТАСКИВАТЬ за заголовок!")
 print(string.rep("=", 60) .. "\n")
