@@ -1,5 +1,5 @@
--- 👕 АВТОПОКУПКА v11.1 - СУПЕРХОДЬБА + УМНЫЕ ФИЛЬТРЫ + 2 ПОПЫТКИ
--- ✅ Гарантированное перемещение | ✅ Улучшенное определение редкости/цены | ✅ Логи фильтрации
+-- 👕 АВТОПОКУПКА v11.2 - ИСПРАВЛЕННЫЙ ПОИСК МАГАЗИНОВ + УМНЫЕ ФИЛЬТРЫ + 2 ПОПЫТКИ
+-- ✅ Поиск Shop_ShopZone_X | ✅ Улучшенное определение редкости/цены | ✅ Логи фильтрации
 
 -- ============================================
 -- СЕРВИСЫ
@@ -18,7 +18,7 @@ local humanoid = character:WaitForChild("Humanoid")
 local rootPart = character:WaitForChild("HumanoidRootPart")
 
 print("\n" .. string.rep("=", 80))
-print("👕 АВТОПОКУПКА v11.1 - СУПЕРХОДЬБА + УМНЫЕ ФИЛЬТРЫ")
+print("👕 АВТОПОКУПКА v11.2 - ИСПРАВЛЕННЫЙ ПОИСК")
 print(string.rep("=", 80) .. "\n")
 
 -- ============================================
@@ -35,7 +35,7 @@ local SETTINGS = {
     WALK_SPEED = 18,
     JUMP_POWER = 50,
     PROMPT_ACTIVATE_DISTANCE = 5,
-    MAX_RETRIES = 2,               -- 🟢 2 попытки
+    MAX_RETRIES = 2,
     MAX_FAILED_ATTEMPTS = 2,
     MIN_PRICE = 0,
     MAX_PRICE = 999999,
@@ -117,7 +117,7 @@ local function getDistance(pos1, pos2)
 end
 
 local function log(message)
-    print("[AutoBuy v11.1] " .. message)
+    print("[AutoBuy v11.2] " .. message)
 end
 
 local function formatNumber(num)
@@ -232,7 +232,7 @@ local function detectPrice(item)
         end
         if #numbers > 0 then
             table.sort(numbers)
-            return numbers[#numbers]  -- максимальное число – вероятно цена
+            return numbers[#numbers]
         end
     end
 
@@ -429,12 +429,13 @@ local function doQuickMove()
 end
 
 -- ============================================
--- ПОИСК МАГАЗИНОВ И ОДЕЖДЫ
+-- ПОИСК МАГАЗИНОВ (ИСПРАВЛЕНО)
 -- ============================================
 local function findShops()
     log("🔍 Поиск магазинов...")
     shopZones = {}
-    local patterns = {"Shop_ShopZone", "ShopZone", "Shop_", "ClothingShop", "Store"}
+    local patterns = {"Shop_ShopZone", "Shop_", "ClothingShop", "Store"}
+    
     for _, obj in ipairs(Workspace:GetDescendants()) do
         if obj:IsA("Model") then
             for _, pattern in ipairs(patterns) do
@@ -445,74 +446,104 @@ local function findShops()
             end
         end
     end
-    log("📊 Всего магазинов: " .. #shopZones)
+    
+    -- Правильный подсчёт ключей
+    local count = 0
+    for _ in pairs(shopZones) do count = count + 1 end
+    log("📊 Всего магазинов: " .. count)
 end
 
+-- ============================================
+-- ПОИСК ОДЕЖДЫ (ИСПРАВЛЕНО)
+-- ============================================
 local function findClothes()
     log("\n🔍 Поиск одежды...")
     clothes = {}
+    
     for _, obj in ipairs(Workspace:GetDescendants()) do
         if obj:IsA("ProximityPrompt") then
             local path = obj:GetFullName()
             local action = obj.ActionText or ""
-            local inShop = false
-            for shopName, _ in pairs(shopZones) do
-                if path:find(shopName) then
-                    inShop = true
-                    break
-                end
-            end
-            if not inShop then
-                if path:find("Shop") or path:find("Store") or path:find("Clothing") then
-                    inShop = true
-                end
-            end
+            
+            -- Проверяем, находится ли в магазине
+            local inShop = path:find("Shop_") or path:find("Shop") or path:find("Store") or path:find("Clothing")
+            
             if inShop and (action:find("Взять") or action:find("Take")) then
                 local parent = obj.Parent
                 local priceText = ""
+                
                 local searchObj = parent
                 for i = 1, 5 do
                     if searchObj then
                         for _, child in ipairs(searchObj:GetChildren()) do
                             if child:IsA("BillboardGui") then
                                 for _, gui in ipairs(child:GetChildren()) do
-                                    if gui:IsA("TextLabel") then priceText = gui.Text end
+                                    if gui:IsA("TextLabel") then
+                                        priceText = gui.Text
+                                    end
                                 end
                             end
                         end
                         searchObj = searchObj.Parent
                     end
                 end
+                
                 local position = findPosition(obj) or findPosition(parent)
+                
+                -- Определяем имя магазина из пути
                 local shopName = "Unknown"
-                for name, _ in pairs(shopZones) do
-                    if path:find(name) then shopName = name; break end
+                for name in path:gmatch("Shop_ShopZone_%d+") do
+                    shopName = name
+                    break
                 end
+                if shopName == "Unknown" then
+                    for name in path:gmatch("Shop_[%w_]+") do
+                        shopName = name
+                        break
+                    end
+                end
+                
                 local floor = "1 этаж"
-                if position and position.Y > 10 then floor = "2 этаж" end
+                if position and position.Y > 10 then
+                    floor = "2 этаж"
+                end
+                
                 table.insert(clothes, {
-                    obj = obj, parent = parent,
+                    obj = obj,
+                    parent = parent,
                     name = parent and parent.Name or "Item",
                     priceText = priceText,
                     position = position,
-                    shop = shopName, floor = floor,
-                    taken = false, unavailable = false, failedAttempts = 0,
-                    rarity = nil, price = nil
+                    shop = shopName,
+                    floor = floor,
+                    taken = false,
+                    unavailable = false,
+                    failedAttempts = 0,
+                    rarity = nil,
+                    price = nil
                 })
             end
+            
             if action:find("Поговорить") or action:find("поговорить") then
                 if not seller then
-                    seller = { obj = obj, position = findPosition(obj) }
+                    seller = {
+                        obj = obj,
+                        position = findPosition(obj)
+                    }
                     log("🏪 Продавец найден")
                 end
             end
         end
     end
+    
     log("✅ Найдено одежды: " .. #clothes)
+    
+    -- Определяем редкость и цену
     log("\n🎨 Определение редкости и цены...")
     for i, item in ipairs(clothes) do
         item.rarity = detectRarity(item)
         item.price = detectPrice(item)
+        
         if i <= 10 then
             log("   " .. i .. ". " .. item.name .. " | " .. (RARITY_NAMES[item.rarity] or item.rarity) .. " | $" .. item.price)
         end
@@ -605,10 +636,10 @@ local function pay()
 end
 
 -- ============================================
--- GUI (полный, как в версии v11.0)
+-- GUI (ПОЛНЫЙ)
 -- ============================================
 local screenGui = Instance.new("ScreenGui")
-screenGui.Name = "AutoBuy_v11_1"
+screenGui.Name = "AutoBuy_v11_2"
 screenGui.ResetOnSpawn = false
 screenGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
 screenGui.Parent = player:WaitForChild("PlayerGui")
@@ -632,7 +663,7 @@ local titleLabel = Instance.new("TextLabel")
 titleLabel.Size = UDim2.new(1, -45, 1, 0)
 titleLabel.Position = UDim2.new(0, 10, 0, 0)
 titleLabel.BackgroundTransparency = 1
-titleLabel.Text = " Автопокупка v11.1 | Суперходьба + Умные фильтры"
+titleLabel.Text = " Автопокупка v11.2 | Исправленный поиск"
 titleLabel.TextColor3 = Color3.new(1, 1, 1)
 titleLabel.Font = Enum.Font.GothamBold
 titleLabel.TextSize = 14
@@ -1303,7 +1334,7 @@ updateStats()
 updateList()
 
 print("\n" .. string.rep("=", 80))
-print("✅ Скрипт v11.1 загружен!")
+print("✅ Скрипт v11.2 загружен!")
 print("🚀 ГАРАНТИРОВАННАЯ ХОДЬБА")
 print("🎯 УМНЫЕ ФИЛЬТРЫ (смотри консоль для отладки)")
 print("🔄 2 попытки взять предмет")
