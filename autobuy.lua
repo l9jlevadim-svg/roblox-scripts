@@ -1,6 +1,6 @@
--- 👕 АВТОПОКУПКА v6.0 - ИСПРАВЛЕННАЯ ОПЛАТА
+-- 👕 АВТОПОКУПКА v7.0 - ПРОПУСК НЕДОСТУПНЫХ
 -- GitHub: loadstring(game:HttpGet("https://raw.githubusercontent.com/l9jlevadim-svg/roblox-scripts/main/autobuy.lua"))()
--- ✅ Двигаемое окно | ✅ Идеальная ходьба | ✅ Оплата после 15 товаров
+-- ✅ Двигаемое окно | ✅ Идеальная ходьба | ✅ Пропуск купленных другими
 
 local Workspace = game:GetService("Workspace")
 local Players = game:GetService("Players")
@@ -14,16 +14,16 @@ local humanoid = character:WaitForChild("Humanoid")
 local rootPart = character:WaitForChild("HumanoidRootPart")
 
 print("\n" .. string.rep("=", 60))
-print("👕 АВТОПОКУПКА v6.0 - ИСПРАВЛЕННАЯ ОПЛАТА")
-print("✅ После 15 товаров → СРАЗУ к оплате!")
+print("👕 АВТОПОКУПКА v7.0 - ПРОПУСК НЕДОСТУПНЫХ")
+print("✅ Пропускает купленные другими | ✅ Двигаемое окно")
 print(string.rep("=", 60) .. "\n")
 
 -- ============================================
 -- НАСТРОЙКИ
 -- ============================================
 local SETTINGS = {
-    MAX_PER_SHOP = 15,       -- Лимит на ОДИН магазин
-    MAX_TOTAL = 15,          -- ОБЩИЙ лимит корзины (после этого → оплата)
+    MAX_PER_SHOP = 15,
+    MAX_TOTAL = 15,
     DELAY_ITEMS = 2,
     REFRESH_TIME = 600,
     STOP_DISTANCE = 4,
@@ -34,7 +34,9 @@ local SETTINGS = {
     STUCK_TIME = 4,
     PATH_AGENT_RADIUS = 2,
     PATH_AGENT_HEIGHT = 5,
-    MOVE_TIMEOUT = 25
+    MOVE_TIMEOUT = 25,
+    TAKE_TIMEOUT = 5,          -- Таймаут на попытку взять предмет (сек)
+    MAX_FAILED_ATTEMPTS = 2    -- Макс попыток перед пропуском
 }
 
 -- ============================================
@@ -145,7 +147,9 @@ local function findClothes()
                     position = position,
                     shop = shopName,
                     floor = floor,
-                    taken = false
+                    taken = false,
+                    unavailable = false,    -- НОВОЕ: помечен как недоступный
+                    failedAttempts = 0      -- НОВОЕ: счетчик неудачных попыток
                 })
             end
             
@@ -155,7 +159,7 @@ local function findClothes()
                         obj = obj,
                         position = findPosition(obj)
                     }
-                    log("🏪 Продавец найден")
+                    log(" Продавец найден")
                 end
             end
         end
@@ -170,7 +174,7 @@ end
 
 local function walkTo(targetPos)
     if not targetPos or not humanoid or not rootPart then
-        log(" walkTo: ошибка параметров")
+        log("❌ walkTo: ошибка параметров")
         return false
     end
     
@@ -278,7 +282,7 @@ local function walkTo(targetPos)
     end
     
     local finalDist = getDistance(rootPart.Position, targetPos)
-    log(" Финальное расстояние: " .. math.floor(finalDist))
+    log("📍 Финальное расстояние: " .. math.floor(finalDist))
     
     if finalDist > SETTINGS.STOP_DISTANCE then
         log("🚶 Подхожу ближе...")
@@ -294,7 +298,7 @@ local function walkTo(targetPos)
 end
 
 -- ============================================
--- АКТИВАЦИЯ PROMPT
+-- АКТИВАЦИЯ PROMPT С ТАЙМАУТОМ
 -- ============================================
 
 local function activatePrompt(prompt)
@@ -307,23 +311,82 @@ local function activatePrompt(prompt)
         log("   Расстояние: " .. math.floor(dist))
         
         if dist > 10 then
-            log("   ⚠️  Далеко! Подхожу...")
+            log("   ️  Далеко! Подхожу...")
             walkTo(prompt.Parent.Position)
         end
     end
     
+    -- Метод 1: fireproximityprompt
     if fireproximityprompt then
         local ok = pcall(function() fireproximityprompt(prompt) end)
         if ok then log("   ✅ fireproximityprompt"); return true end
     end
     
+    -- Метод 2: InputHold
     local ok = pcall(function()
         prompt:InputHoldBegin()
         task.wait(1.5)
         prompt:InputHoldEnd()
     end)
     
-    return ok
+    if ok then
+        log("   ✅ InputHold")
+        return true
+    else
+        log("   ❌ Ошибка активации")
+        return false
+    end
+end
+
+-- ============================================
+-- 🎯 ПРОВЕРКА ДОСТУПНОСТИ ПРЕДМЕТА
+-- ============================================
+
+local function tryTakeItem(item)
+    log(" Пробую взять: " .. item.name)
+    
+    -- Проверяем доступен ли предмет
+    if item.unavailable then
+        log("   ⏭️  Предмет помечен как недоступный, пропускаю")
+        return false
+    end
+    
+    -- Проверяем существует ли еще prompt
+    if not item.obj or not item.obj.Parent then
+        log("   ❌ Prompt исчез, помечаю как недоступный")
+        item.unavailable = true
+        return false
+    end
+    
+    -- Пробуем активировать с таймаутом
+    local startTime = tick()
+    local activated = false
+    
+    -- Пробуем несколько раз в течение TAKE_TIMEOUT секунд
+    while tick() - startTime < SETTINGS.TAKE_TIMEOUT do
+        if not running then return false end
+        
+        activated = activatePrompt(item.obj)
+        
+        if activated then
+            log("   ✅ Успешно взял!")
+            return true
+        end
+        
+        -- Ждем немного перед следующей попыткой
+        task.wait(1)
+    end
+    
+    -- Не удалось взять за таймаут
+    log("   ️  Таймаут попытки взять (" .. SETTINGS.TAKE_TIMEOUT .. "с)")
+    item.failedAttempts = item.failedAttempts + 1
+    
+    if item.failedAttempts >= SETTINGS.MAX_FAILED_ATTEMPTS then
+        log("   ❌ Слишком много неудачных попыток (" .. item.failedAttempts .. "), помечаю как недоступный")
+        item.unavailable = true
+    end
+    
+    return false
 end
 
 -- ============================================
@@ -369,7 +432,7 @@ end
 -- ============================================
 
 local screenGui = Instance.new("ScreenGui")
-screenGui.Name = "AutoBuy_v6"
+screenGui.Name = "AutoBuy_v7"
 screenGui.ResetOnSpawn = false
 screenGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
 screenGui.Parent = player:WaitForChild("PlayerGui")
@@ -393,7 +456,7 @@ local titleLabel = Instance.new("TextLabel")
 titleLabel.Size = UDim2.new(1, -45, 1, 0)
 titleLabel.Position = UDim2.new(0, 10, 0, 0)
 titleLabel.BackgroundTransparency = 1
-titleLabel.Text = "👕 Автопокупка v6.0 | Оплата после 15"
+titleLabel.Text = " Автопокупка v7.0 | Пропуск недоступных"
 titleLabel.TextColor3 = Color3.new(1, 1, 1)
 titleLabel.Font = Enum.Font.GothamBold
 titleLabel.TextSize = 16
@@ -578,24 +641,32 @@ local function updateList()
         if match then
             local itemFrame = Instance.new("Frame")
             itemFrame.Size = UDim2.new(1, -10, 0, 50)
-            itemFrame.BackgroundColor3 = item.taken and 
-                Color3.fromRGB(40, 80, 40) or 
-                Color3.fromRGB(35, 35, 35)
+            
+            -- Цвет зависит от статуса
+            if item.taken then
+                itemFrame.BackgroundColor3 = Color3.fromRGB(40, 80, 40)
+            elseif item.unavailable then
+                itemFrame.BackgroundColor3 = Color3.fromRGB(80, 40, 40)  -- Красный для недоступных
+            else
+                itemFrame.BackgroundColor3 = Color3.fromRGB(35, 35, 35)
+            end
+            
             itemFrame.LayoutOrder = i
             itemFrame.Parent = scrollFrame
             Instance.new("UICorner", itemFrame).CornerRadius = UDim.new(0, 8)
             
             local shopLimit = shopLimits[item.shop] or 0
             local limitText = shopLimit >= SETTINGS.MAX_PER_SHOP and " [🔒 ЛИМИТ]" or ""
+            local unavailableText = item.unavailable and " [❌ КУПЛЕНО]" or ""
             
             local nameLabel = Instance.new("TextLabel")
             nameLabel.Size = UDim2.new(1, -10, 0, 24)
             nameLabel.Position = UDim2.new(0, 10, 0, 3)
             nameLabel.BackgroundTransparency = 1
-            nameLabel.Text = (item.taken and "✅ " or "📦 ") .. item.name
+            nameLabel.Text = (item.taken and "✅ " or "📦 ") .. item.name .. unavailableText
             nameLabel.TextColor3 = item.taken and 
                 Color3.fromRGB(100, 255, 100) or 
-                Color3.new(1, 1, 1)
+                (item.unavailable and Color3.fromRGB(255, 100, 100) or Color3.new(1, 1, 1))
             nameLabel.Font = Enum.Font.GothamBold
             nameLabel.TextSize = 12
             nameLabel.TextXAlignment = Enum.TextXAlignment.Left
@@ -620,16 +691,18 @@ end
 local function resetAll()
     for _, item in ipairs(clothes) do
         item.taken = false
+        item.unavailable = false      -- Сбрасываем статус недоступности
+        item.failedAttempts = 0       -- Сбрасываем счетчик попыток
     end
     shopLimits = {}
     takenCount = 0
     lastTakeTime = 0
-    addLog(" Сброс счетчиков")
+    addLog("🔄 Сброс счетчиков")
     updateList()
 end
 
 -- ============================================
--- 🎯 ФУНКЦИЯ ОПЛАТЫ (отдельная)
+-- ФУНКЦИЯ ОПЛАТЫ
 -- ============================================
 
 local function goToPay()
@@ -647,16 +720,14 @@ local function goToPay()
     
     log("\n💰 КОРЗИНА ПОЛНА (" .. takenCount .. "/" .. SETTINGS.MAX_TOTAL .. ") → ИДУ ОПЛАЧИВАТЬ!")
     addLog("💰 Иду оплачивать " .. takenCount .. " товаров!")
-    statusLabel.Text = "💰 Иду к продавцу..."
+    statusLabel.Text = " Иду к продавцу..."
     statusLabel.TextColor3 = Color3.fromRGB(255, 200, 100)
     
-    -- Идем к продавцу
     if seller.position then
         walkTo(seller.position)
         task.wait(1)
     end
     
-    -- Говорим с продавцом
     log("💬 Разговор с продавцом...")
     addLog("💬 Говорю...")
     statusLabel.Text = "💬 Разговор..."
@@ -664,7 +735,6 @@ local function goToPay()
     activatePrompt(seller.obj)
     task.wait(3)
     
-    -- Оплата
     log("💳 Оплата...")
     addLog("💳 Оплачиваю...")
     statusLabel.Text = "💳 Оплата..."
@@ -684,7 +754,7 @@ local function goToPay()
 end
 
 -- ============================================
--- ОСНОВНОЙ ЦИКЛ (ИСПРАВЛЕННЫЙ)
+-- ОСНОВНОЙ ЦИКЛ
 -- ============================================
 
 local function mainLoop()
@@ -696,30 +766,33 @@ local function mainLoop()
         statusLabel.Text = "🔄 Начинаю обход магазинов..."
         statusLabel.TextColor3 = Color3.fromRGB(255, 200, 100)
         
-        -- 🎯 ГЛАВНОЕ ИСПРАВЛЕНИЕ: цикл прерывается когда набрали MAX_TOTAL
         local shouldPay = false
         
         for _, item in ipairs(clothes) do
             if not running then break end
             if item.taken then continue end
             
-            -- Проверка ОБЩЕГО лимита корзины
-            if takenCount >= SETTINGS.MAX_TOTAL then
-                log("\n🎯 КОРЗИНА ПОЛНА! (" .. takenCount .. "/" .. SETTINGS.MAX_TOTAL .. ")")
-                log("🎯 ПРЕКРАЩАЮ СБОР → ИДУ ОПЛАЧИВАТЬ!")
-                addLog("🎯 Корзина полна! (" .. takenCount .. ")")
-                shouldPay = true
-                break  --  ВЫХОДИМ ИЗ ЦИКЛА СБОРА!
-            end
-            
-            -- Проверка лимита конкретного магазина
-            local shopCount = shopLimits[item.shop] or 0
-            if shopCount >= SETTINGS.MAX_PER_SHOP then
-                log("️  " .. item.shop .. " - лимит магазина достигнут")
+            -- Пропускаем недоступные предметы
+            if item.unavailable then
+                log("⏭️  Пропускаю " .. item.name .. " (куплено другим)")
                 continue
             end
             
-            -- Задержка между предметами
+            -- Проверка общего лимита
+            if takenCount >= SETTINGS.MAX_TOTAL then
+                log("\n КОРЗИНА ПОЛНА! (" .. takenCount .. "/" .. SETTINGS.MAX_TOTAL .. ")")
+                shouldPay = true
+                break
+            end
+            
+            -- Проверка лимита магазина
+            local shopCount = shopLimits[item.shop] or 0
+            if shopCount >= SETTINGS.MAX_PER_SHOP then
+                log("⏭️  " .. item.shop .. " - лимит магазина")
+                continue
+            end
+            
+            -- Задержка
             local waitTime = SETTINGS.DELAY_ITEMS - (tick() - lastTakeTime)
             if waitTime > 0 then
                 local waitSec = math.ceil(waitTime)
@@ -740,54 +813,45 @@ local function mainLoop()
             statusLabel.Text = " " .. item.name .. " (" .. item.shop .. ")"
             
             if item.position then
-                local success = walkTo(item.position)
-                
-                if not success then
-                    log("⚠️  Не удалось дойти")
-                end
-                
+                walkTo(item.position)
                 task.wait(0.5)
-            else
-                log(" Нет позиции для " .. item.name)
             end
             
-            -- Берем предмет
-            log(" Активация prompt...")
+            -- 🎯 ПЫТАЕМСЯ ВЗЯТЬ С ТАЙМАУТОМ
+            log("🤖 Пробую взять...")
             addLog("🤖 Беру...")
             statusLabel.Text = "🤖 Беру " .. item.name .. "..."
             
-            local activated = activatePrompt(item.obj)
+            local success = tryTakeItem(item)
             
-            if activated then
+            if success then
                 item.taken = true
                 takenCount = takenCount + 1
                 shopLimits[item.shop] = (shopLimits[item.shop] or 0) + 1
                 lastTakeTime = tick()
                 
                 local currentShopCount = shopLimits[item.shop]
-                log("✅ Взял! " .. item.name .. " [" .. takenCount .. "/" .. SETTINGS.MAX_TOTAL .. " всего] [" .. currentShopCount .. "/" .. SETTINGS.MAX_PER_SHOP .. " в " .. item.shop .. "]")
+                log("✅ Взял! " .. item.name .. " [" .. takenCount .. "/" .. SETTINGS.MAX_TOTAL .. "]")
                 addLog("✅ " .. item.name .. " (" .. takenCount .. "/" .. SETTINGS.MAX_TOTAL .. ")")
                 
                 updateStats()
                 updateList()
                 
-                -- 🎯 ПРОВЕРКА ПОСЛЕ КАЖДОГО ВЗЯТИЯ
+                -- Проверка лимита
                 if takenCount >= SETTINGS.MAX_TOTAL then
-                    log("\n🎯 ДОСТИГНУТ ЛИМИТ КОРЗИНЫ! (" .. takenCount .. "/" .. SETTINGS.MAX_TOTAL .. ")")
-                    log("🎯 ПРЕКРАЩАЮ СБОР → ИДУ ОПЛАЧИВАТЬ!")
-                    addLog(" Лимит! Иду платить...")
+                    log("\n🎯 ДОСТИГНУТ ЛИМИТ КОРЗИНЫ!")
                     shouldPay = true
-                    break  -- 🚨 СРАЗУ ВЫХОДИМ!
+                    break
                 end
             else
                 log("❌ Не удалось взять: " .. item.name)
-                addLog("❌ " .. item.name)
+                addLog("❌ " .. item.name .. " (пропуск)")
             end
             
             task.wait(0.5)
         end
         
-        -- 🎯 ОБЯЗАТЕЛЬНАЯ ОПЛАТА если есть товары
+        -- Оплата
         if shouldPay or takenCount > 0 then
             goToPay()
         else
@@ -796,7 +860,7 @@ local function mainLoop()
         end
         
         -- Ожидание обновления
-        log("\n Ожидание обновления магазина (10 минут)...")
+        log("\n⏳ Ожидание обновления магазина (10 минут)...")
         addLog("⏳ Жду 10 мин...")
         statusLabel.Text = "⏳ Ожидание обновления..."
         statusLabel.TextColor3 = Color3.fromRGB(150, 150, 255)
@@ -840,7 +904,7 @@ startBtn.MouseButton1Click:Connect(function()
     else
         log("\n▶️ Запуск скрипта...")
         running = true
-        startBtn.Text = "️ ОСТАНОВИТЬ"
+        startBtn.Text = "⏹️ ОСТАНОВИТЬ"
         startBtn.BackgroundColor3 = Color3.fromRGB(220, 50, 50)
         task.spawn(mainLoop)
     end
@@ -861,8 +925,10 @@ updateList()
 
 print("\n" .. string.rep("=", 60))
 print("✅ Скрипт успешно загружен!")
-print(" Найдено магазинов: " .. #shopZones)
+print("📊 Найдено магазинов: " .. #shopZones)
 print("📊 Найдено одежды: " .. #clothes)
-print(" ПОСЛЕ 15 ТОВАРОВ → СРАЗУ К ОПЛАТЕ!")
+print("⏱️  Таймаут на предмет: " .. SETTINGS.TAKE_TIMEOUT .. " сек")
+print("❌ Макс неудачных попыток: " .. SETTINGS.MAX_FAILED_ATTEMPTS)
+print(" После " .. SETTINGS.MAX_TOTAL .. " товаров → оплата!")
 print("🖱️  ОКНО МОЖНО ПЕРЕТАСКИВАТЬ за заголовок!")
 print(string.rep("=", 60) .. "\n")
