@@ -1,4 +1,4 @@
--- 👕 АВТОПОКУПКА v8.1 - ПРОСТАЯ РАБОЧАЯ ХОДЬБА
+-- 👕 АВТОПОКУПКА v8.2 - ПРОВЕРКА РЕАЛЬНОЙ КОРЗИНЫ
 -- GitHub: loadstring(game:HttpGet("https://raw.githubusercontent.com/l9jlevadim-svg/roblox-scripts/main/autobuy.lua"))()
 
 local Workspace = game:GetService("Workspace")
@@ -13,7 +13,7 @@ local humanoid = character:WaitForChild("Humanoid")
 local rootPart = character:WaitForChild("HumanoidRootPart")
 
 print("\n" .. string.rep("=", 60))
-print("👕 АВТОПОКУПКА v8.1 - ПРОСТАЯ РАБОЧАЯ ХОДЬБА")
+print("👕 АВТОПОКУПКА v8.2 - ПРОВЕРКА РЕАЛЬНОЙ КОРЗИНЫ")
 print(string.rep("=", 60) .. "\n")
 
 -- ============================================
@@ -30,11 +30,11 @@ local SETTINGS = {
     MAX_RETRIES = 3,
     RETRY_DELAY = 1,
     MAX_FAILED_ATTEMPTS = 2,
-    -- Ходьба
-    STOP_DISTANCE = 4,          -- Останавливаемся в 4 студиях от цели
-    PROMPT_RANGE = 10,          -- fireproximityprompt работает до 10 студий
+    STOP_DISTANCE = 4,
+    PROMPT_RANGE = 10,
     PATH_RADIUS = 2,
-    PATH_HEIGHT = 5
+    PATH_HEIGHT = 5,
+    CART_CHECK_DELAY = 0.5  -- Задержка после активации для проверки корзины
 }
 
 -- ============================================
@@ -49,6 +49,7 @@ local shopLimits = {}
 local lastTakeTime = 0
 local shopZones = {}
 local lastMoveTime = 0
+local initialCartCount = 0  -- Начальное количество в корзине
 
 -- ============================================
 -- ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ
@@ -78,138 +79,7 @@ local function log(message)
 end
 
 -- ============================================
---  ПРОСТАЯ РАБОЧАЯ ХОДЬБА
--- ============================================
-
-local function walkTo(targetPos)
-    if not targetPos or not humanoid or not rootPart then
-        log("❌ walkTo: ошибка параметров")
-        return false
-    end
-    
-    local startPos = rootPart.Position
-    local totalDistance = getDistance(startPos, targetPos)
-    
-    log("🚶 Иду: " .. math.floor(totalDistance) .. " студий")
-    
-    -- Сохраняем статы
-    local originalWalkSpeed = humanoid.WalkSpeed
-    local originalJumpPower = humanoid.JumpPower
-    
-    humanoid.WalkSpeed = SETTINGS.WALK_SPEED
-    humanoid.JumpPower = SETTINGS.JUMP_POWER
-    
-    -- ✅ Вычисляем точку остановки (не вплотную к стене!)
-    local direction = (targetPos - startPos)
-    if direction.Magnitude > 0 then
-        direction = direction.Unit
-    else
-        direction = Vector3.new(0, 0, 1)
-    end
-    
-    local walkTarget
-    if totalDistance > SETTINGS.STOP_DISTANCE then
-        walkTarget = targetPos - (direction * SETTINGS.STOP_DISTANCE)
-    else
-        walkTarget = targetPos
-    end
-    
-    log("   Точка остановки: " .. math.floor(getDistance(startPos, walkTarget)) .. " студий")
-    
-    -- ✅ Создаем путь
-    local path = PathfindingService:CreatePath({
-        AgentRadius = SETTINGS.PATH_RADIUS,
-        AgentHeight = SETTINGS.PATH_HEIGHT,
-        AgentCanJump = true,      -- Нужно для лестниц на 2 этаж
-        AgentCanClimb = true
-    })
-    
-    local success = pcall(function()
-        path:ComputeAsync(startPos, walkTarget)
-    end)
-    
-    if not success or path.Status ~= Enum.PathStatus.Success then
-        log("   ⚠️ Путь не найден, иду напрямик...")
-        humanoid:MoveTo(walkTarget)
-        humanoid.MoveToFinished:Wait(15)
-        humanoid.WalkSpeed = originalWalkSpeed
-        humanoid.JumpPower = originalJumpPower
-        return true
-    end
-    
-    -- ✅ Идём по точкам пути
-    local waypoints = path:GetWaypoints()
-    log("   ✅ Путь: " .. #waypoints .. " точек")
-    
-    for i, waypoint in ipairs(waypoints) do
-        if not running then
-            humanoid.WalkSpeed = originalWalkSpeed
-            humanoid.JumpPower = originalJumpPower
-            return false
-        end
-        
-        -- Идём к точке
-        humanoid:MoveTo(waypoint.Position)
-        
-        -- Прыгаем ТОЛЬКО если путь говорит (лестница/препятствие)
-        if waypoint.Action == Enum.PathWaypointAction.Jump then
-            humanoid:ChangeState(Enum.HumanoidStateType.Jumping)
-        end
-        
-        -- Ждём достижения точки
-        local startTime = tick()
-        local lastPos = rootPart.Position
-        local stuckTime = 0
-        
-        while tick() - startTime < 15 do
-            if not running then
-                humanoid.WalkSpeed = originalWalkSpeed
-                humanoid.JumpPower = originalJumpPower
-                return false
-            end
-            
-            local currentPos = rootPart.Position
-            local dist = getDistance(currentPos, waypoint.Position)
-            local moved = getDistance(currentPos, lastPos)
-            
-            -- Проверка застревания
-            if moved < 0.5 then
-                stuckTime = stuckTime + 0.1
-                if stuckTime >= 3 then
-                    log("   ⚠️ Застрял! Прыгаю...")
-                    humanoid:ChangeState(Enum.HumanoidStateType.Jumping)
-                    task.wait(0.5)
-                    stuckTime = 0
-                end
-            else
-                stuckTime = 0
-            end
-            
-            lastPos = currentPos
-            
-            -- Дошли до точки
-            if dist < 3 then
-                break
-            end
-            
-            task.wait(0.1)
-        end
-        
-        task.wait(0.1)
-    end
-    
-    -- Восстанавливаем статы
-    humanoid.WalkSpeed = originalWalkSpeed
-    humanoid.JumpPower = originalJumpPower
-    
-    local finalDist = getDistance(rootPart.Position, targetPos)
-    log("   📍 Расстояние до цели: " .. math.floor(finalDist))
-    
-    return true
-end
-
--- ============================================
--- СИНХРОНИЗАЦИЯ КОРЗИНЫ
+-- 🛒 ПРОВЕРКА РЕАЛЬНОЙ КОРЗИНЫ
 -- ============================================
 
 local function getRealCartCount()
@@ -226,7 +96,7 @@ local function getRealCartCount()
                     local number = text:match("(%d+)")
                     if number then
                         local count = tonumber(number)
-                        if count and count > 0 and count <= 100 then
+                        if count and count >= 0 and count <= 100 then
                             return count
                         end
                     end
@@ -253,7 +123,120 @@ local function syncCart()
 end
 
 -- ============================================
--- СОРТИРОВКА ПО БЛИЗОСТИ
+-- ХОДЬБА
+-- ============================================
+
+local function walkTo(targetPos)
+    if not targetPos or not humanoid or not rootPart then
+        return false
+    end
+    
+    local startPos = rootPart.Position
+    local totalDistance = getDistance(startPos, targetPos)
+    
+    log("🚶 Иду: " .. math.floor(totalDistance) .. " студий")
+    
+    local originalWalkSpeed = humanoid.WalkSpeed
+    local originalJumpPower = humanoid.JumpPower
+    
+    humanoid.WalkSpeed = SETTINGS.WALK_SPEED
+    humanoid.JumpPower = SETTINGS.JUMP_POWER
+    
+    local direction = (targetPos - startPos)
+    if direction.Magnitude > 0 then
+        direction = direction.Unit
+    else
+        direction = Vector3.new(0, 0, 1)
+    end
+    
+    local walkTarget
+    if totalDistance > SETTINGS.STOP_DISTANCE then
+        walkTarget = targetPos - (direction * SETTINGS.STOP_DISTANCE)
+    else
+        walkTarget = targetPos
+    end
+    
+    local path = PathfindingService:CreatePath({
+        AgentRadius = SETTINGS.PATH_RADIUS,
+        AgentHeight = SETTINGS.PATH_HEIGHT,
+        AgentCanJump = true,
+        AgentCanClimb = true
+    })
+    
+    local success = pcall(function()
+        path:ComputeAsync(startPos, walkTarget)
+    end)
+    
+    if not success or path.Status ~= Enum.PathStatus.Success then
+        log("   ⚠️ Путь не найден, иду напрямик...")
+        humanoid:MoveTo(walkTarget)
+        humanoid.MoveToFinished:Wait(15)
+        humanoid.WalkSpeed = originalWalkSpeed
+        humanoid.JumpPower = originalJumpPower
+        return true
+    end
+    
+    local waypoints = path:GetWaypoints()
+    log("   ✅ Путь: " .. #waypoints .. " точек")
+    
+    for i, waypoint in ipairs(waypoints) do
+        if not running then
+            humanoid.WalkSpeed = originalWalkSpeed
+            humanoid.JumpPower = originalJumpPower
+            return false
+        end
+        
+        humanoid:MoveTo(waypoint.Position)
+        
+        if waypoint.Action == Enum.PathWaypointAction.Jump then
+            humanoid:ChangeState(Enum.HumanoidStateType.Jumping)
+        end
+        
+        local startTime = tick()
+        local lastPos = rootPart.Position
+        local stuckTime = 0
+        
+        while tick() - startTime < 15 do
+            if not running then
+                humanoid.WalkSpeed = originalWalkSpeed
+                humanoid.JumpPower = originalJumpPower
+                return false
+            end
+            
+            local currentPos = rootPart.Position
+            local dist = getDistance(currentPos, waypoint.Position)
+            local moved = getDistance(currentPos, lastPos)
+            
+            if moved < 0.5 then
+                stuckTime = stuckTime + 0.1
+                if stuckTime >= 3 then
+                    log("   ⚠️ Застрял! Прыгаю...")
+                    humanoid:ChangeState(Enum.HumanoidStateType.Jumping)
+                    task.wait(0.5)
+                    stuckTime = 0
+                end
+            else
+                stuckTime = 0
+            end
+            
+            lastPos = currentPos
+            
+            if dist < 3 then break end
+            
+            task.wait(0.1)
+        end
+        
+        task.wait(0.1)
+    end
+    
+    humanoid.WalkSpeed = originalWalkSpeed
+    humanoid.JumpPower = originalJumpPower
+    
+    return true
+end
+
+-- ============================================
+-- СОРТИРОВКА
 -- ============================================
 
 local function sortByDistance()
@@ -266,8 +249,6 @@ local function sortByDistance()
         local distB = b.position and getDistance(currentPos, b.position) or math.huge
         return distA < distB
     end)
-    
-    log("🎯 Отсортировано по близости!")
 end
 
 -- ============================================
@@ -314,7 +295,7 @@ local function findShops()
 end
 
 local function findClothes()
-    log("\n Поиск одежды...")
+    log("\n🔍 Поиск одежды...")
     clothes = {}
     
     for _, obj in ipairs(Workspace:GetDescendants()) do
@@ -391,7 +372,7 @@ local function findClothes()
                         obj = obj,
                         position = findPosition(obj)
                     }
-                    log("🏪 Продавец найден")
+                    log(" Продавец найден")
                 end
             end
         end
@@ -401,7 +382,7 @@ local function findClothes()
 end
 
 -- ============================================
--- АКТИВАЦИЯ PROMPT (РАБОТАЕТ НА РАССТОЯНИИ!)
+-- ✅ АКТИВАЦИЯ С ПРОВЕРКОЙ КОРЗИНЫ
 -- ============================================
 
 local function activatePrompt(prompt)
@@ -412,33 +393,56 @@ local function activatePrompt(prompt)
     
     log("   🔘 Активирую prompt...")
     
-    -- ✅ fireproximityprompt работает на расстоянии до 10-15 студий!
-    -- Не нужно подходить вплотную!
+    -- Запоминаем количество ДО активации
+    local countBefore = getRealCartCount() or takenCount
+    log("   📊 Корзина до: " .. countBefore)
+    
+    -- Метод 1: fireproximityprompt
     if fireproximityprompt then
         local ok = pcall(function() 
             fireproximityprompt(prompt) 
         end)
         if ok then 
-            log("   ✅ fireproximityprompt сработал!")
-            return true 
+            log("   ✅ fireproximityprompt сработал")
+        else
+            log("   ⚠️ fireproximityprompt не сработал")
         end
-        log("   ⚠️ fireproximityprompt не сработал")
     end
     
     -- Метод 2: InputHold
-    log("    Пробую InputHold...")
-    local ok = pcall(function()
-        prompt:InputHoldBegin()
-        task.wait(1.5)
-        prompt:InputHoldEnd()
-    end)
+    if not fireproximityprompt then
+        local ok = pcall(function()
+            prompt:InputHoldBegin()
+            task.wait(1.5)
+            prompt:InputHoldEnd()
+        end)
+        
+        if not ok then
+            log("   ❌ InputHold не сработал")
+            return false
+        end
+    end
     
-    if ok then
-        log("   ✅ InputHold сработал!")
+    --  Ждём чтобы игра обработала добавление в корзину
+    task.wait(SETTINGS.CART_CHECK_DELAY)
+    
+    -- Проверяем количество ПОСЛЕ активации
+    local countAfter = getRealCartCount()
+    log("    Корзина после: " .. tostring(countAfter))
+    
+    -- Если корзина увеличилась - значит взял!
+    if countAfter and countAfter > countBefore then
+        log("   ✅ Вещь добавлена в корзину! (" .. countBefore .. " → " .. countAfter .. ")")
         return true
     end
     
-    log("   ❌ Оба метода не сработали")
+    -- Если не удалось проверить корзину - считаем что взял (для совместимости)
+    if countAfter == nil then
+        log("   ⚠️ Не удалось проверить корзину, считаю что взял")
+        return true
+    end
+    
+    log("   ❌ Вещь НЕ добавлена в корзину")
     return false
 end
 
@@ -447,7 +451,7 @@ end
 -- ============================================
 
 local function tryTakeItem(item)
-    log(" Пробую взять: " .. item.name)
+    log("🎯 Пробую взять: " .. item.name)
     
     if item.unavailable then return false end
     
@@ -465,7 +469,7 @@ local function tryTakeItem(item)
             task.wait(SETTINGS.RETRY_DELAY)
             
             if not item.obj or not item.obj.Parent then
-                log("    Prompt исчез")
+                log("   ❌ Prompt исчез")
                 item.unavailable = true
                 return false
             end
@@ -541,7 +545,7 @@ end
 -- ============================================
 
 local screenGui = Instance.new("ScreenGui")
-screenGui.Name = "AutoBuy_v8_1"
+screenGui.Name = "AutoBuy_v8_2"
 screenGui.ResetOnSpawn = false
 screenGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
 screenGui.Parent = player:WaitForChild("PlayerGui")
@@ -565,7 +569,7 @@ local titleLabel = Instance.new("TextLabel")
 titleLabel.Size = UDim2.new(1, -45, 1, 0)
 titleLabel.Position = UDim2.new(0, 10, 0, 0)
 titleLabel.BackgroundTransparency = 1
-titleLabel.Text = "👕 Автопокупка v8.1 | Простая ходьба"
+titleLabel.Text = "👕 Автопокупка v8.2 | Проверка корзины"
 titleLabel.TextColor3 = Color3.new(1, 1, 1)
 titleLabel.Font = Enum.Font.GothamBold
 titleLabel.TextSize = 16
@@ -584,7 +588,6 @@ closeBtn.Parent = titleBar
 Instance.new("UICorner", closeBtn).CornerRadius = UDim.new(0, 8)
 closeBtn.MouseButton1Click:Connect(function() running = false screenGui:Destroy() end)
 
--- ДВИГАЕМОЕ ОКНО
 local dragging = false
 local dragInput = nil
 local dragStart = nil
@@ -630,7 +633,7 @@ filterBox.Size = UDim2.new(1, -20, 0, 40)
 filterBox.Position = UDim2.new(0, 10, 0, 60)
 filterBox.BackgroundColor3 = Color3.fromRGB(30, 30, 30)
 filterBox.TextColor3 = Color3.new(1, 1, 1)
-filterBox.PlaceholderText = "🔍 Фильтр..."
+filterBox.PlaceholderText = " Фильтр..."
 filterBox.Text = ""
 filterBox.Font = Enum.Font.Gotham
 filterBox.TextSize = 14
@@ -692,7 +695,7 @@ local logLabel = Instance.new("TextLabel")
 logLabel.Size = UDim2.new(1, -20, 0, 90)
 logLabel.Position = UDim2.new(0, 10, 0, 265)
 logLabel.BackgroundTransparency = 1
-logLabel.Text = "📋 Лог:"
+logLabel.Text = " Лог:"
 logLabel.TextColor3 = Color3.fromRGB(180, 180, 180)
 logLabel.Font = Enum.Font.Code
 logLabel.TextSize = 11
@@ -748,7 +751,7 @@ local function updateList()
             nameLabel.Size = UDim2.new(1, -10, 0, 24)
             nameLabel.Position = UDim2.new(0, 10, 0, 3)
             nameLabel.BackgroundTransparency = 1
-            nameLabel.Text = (item.taken and "✅ " or " ") .. item.name .. unavailableText
+            nameLabel.Text = (item.taken and "✅ " or "📦 ") .. item.name .. unavailableText
             nameLabel.TextColor3 = item.taken and Color3.fromRGB(100, 255, 100) or (item.unavailable and Color3.fromRGB(255, 100, 100) or Color3.new(1, 1, 1))
             nameLabel.Font = Enum.Font.GothamBold
             nameLabel.TextSize = 12
@@ -777,15 +780,23 @@ local function resetAll()
 end
 
 -- ============================================
--- ОПЛАТА
+-- 💰 ОПЛАТА (ТОЛЬКО ЕСЛИ ЕСТЬ ВЕЩИ!)
 -- ============================================
 
 local function goToPay()
+    -- Синхронизируем корзину
     syncCart()
     
-    if takenCount == 0 then
-        log("❌ Корзина пуста!")
-        addLog("❌ Пусто")
+    log("\n💰 ПРОВЕРКА КОРЗИНЫ ПЕРЕД ОПЛАТОЙ...")
+    log("   takenCount (скрипт): " .. takenCount)
+    
+    local realCount = getRealCartCount()
+    log("   realCount (игра): " .. tostring(realCount))
+    
+    -- Если в корзине 0 вещей - НЕ ИДЁМ К ОПЛАТЕ!
+    if takenCount == 0 or (realCount and realCount == 0) then
+        log("❌ Корзина пуста! Не иду к оплате!")
+        addLog("❌ Пусто, не оплачиваю")
         return
     end
     
@@ -795,13 +806,13 @@ local function goToPay()
         return
     end
     
-    log("\n💰 КОРЗИНА: " .. takenCount .. " → ОПЛАТА!")
-    addLog("💰 Иду оплачивать...")
+    log("\n💰 В КОРЗИНЕ: " .. takenCount .. " вещей → ИДУ К ОПЛАТЕ!")
+    addLog("💰 Иду оплачивать " .. takenCount .. " товаров...")
     statusLabel.Text = "💰 Оплата..."
     statusLabel.TextColor3 = Color3.fromRGB(255, 200, 100)
     
     if seller.position then
-        log("🚶 Иду к продавцу...")
+        log(" Иду к продавцу...")
         walkTo(seller.position)
         task.wait(1)
     end
@@ -813,8 +824,8 @@ local function goToPay()
     activatePrompt(seller.obj)
     task.wait(2)
     
-    log("💳 Оплата...")
-    addLog("💳 Оплачиваю...")
+    log(" Оплата...")
+    addLog(" Оплачиваю...")
     statusLabel.Text = "💳 Оплата..."
     
     local paid = pay()
@@ -838,7 +849,7 @@ local function goToPay()
             updateStats()
         else
             log("❌ ОПЛАТА ПРОВАЛЕНА!")
-            addLog(" Оплата провалена!")
+            addLog("❌ Оплата провалена!")
         end
     end
 end
@@ -850,16 +861,20 @@ end
 local function mainLoop()
     log("\n🎬 ЗАПУСК ЦИКЛА!")
     
+    -- Запоминаем начальное количество в корзине
+    initialCartCount = getRealCartCount() or 0
+    log(" Начальная корзина: " .. initialCartCount)
+    
     while running do
         resetAll()
         
-        log("\n Сортировка...")
-        addLog(" Сортировка...")
+        log("\n🎯 Сортировка...")
+        addLog("🎯 Сортировка...")
         sortByDistance()
         updateList()
         
-        addLog(" Новый цикл!")
-        statusLabel.Text = " Начинаю..."
+        addLog("🔄 Новый цикл!")
+        statusLabel.Text = "🔄 Начинаю..."
         statusLabel.TextColor3 = Color3.fromRGB(255, 200, 100)
         
         local shouldPay = false
@@ -872,7 +887,7 @@ local function mainLoop()
             syncCart()
             
             if takenCount >= SETTINGS.MAX_TOTAL then
-                log("\n🎯 КОРЗИНА ПОЛНА! (" .. takenCount .. ")")
+                log("\n КОРЗИНА ПОЛНА! (" .. takenCount .. ")")
                 shouldPay = true
                 break
             end
@@ -901,7 +916,7 @@ local function mainLoop()
                 task.wait(0.5)
             end
             
-            addLog(" Беру...")
+            addLog("🤖 Беру...")
             statusLabel.Text = "🤖 Беру " .. item.name
             
             local success = tryTakeItem(item)
@@ -941,7 +956,7 @@ local function mainLoop()
                 updateList()
             end
         else
-            addLog("❌ Пусто")
+            addLog("❌ Пусто, не оплачиваю")
         end
         
         log("\n⏳ Ожидание (10 мин)...")
@@ -966,7 +981,7 @@ local function mainLoop()
     running = false
     startBtn.Text = "▶️ ЗАПУСТИТЬ АВТОПОКУПКУ"
     startBtn.BackgroundColor3 = Color3.fromRGB(80, 200, 80)
-    addLog("⏹️ Остановлено")
+    addLog("️ Остановлено")
 end
 
 startBtn.MouseButton1Click:Connect(function()
@@ -993,13 +1008,11 @@ updateStats()
 updateList()
 
 print("\n" .. string.rep("=", 60))
-print("✅ Скрипт v8.1 загружен!")
-print(" ПРОСТАЯ ХОДЬБА:")
-print("   - Pathfinding с AgentCanJump=true (для лестниц)")
-print("   - Остановка в " .. SETTINGS.STOP_DISTANCE .. " студиях от цели")
-print("   - fireproximityprompt работает на расстоянии до " .. SETTINGS.PROMPT_RANGE .. " студий")
-print("   - Не нужно подходить вплотную!")
+print("✅ Скрипт v8.2 загружен!")
+print("🛒 ПРОВЕРКА РЕАЛЬНОЙ КОРЗИНЫ:")
+print("   - Проверяет корзину ДО и ПОСЛЕ активации")
+print("   - Если корзина не изменилась - считает что не взял")
+print("   - Не идёт к оплате если корзина пустая!")
 print("🔄 3 попытки взять предмет")
-print("🛒 Синхронизация корзины")
-print("💰 Гарантированная оплата")
+print("💰 Гарантированная оплата только с вещами")
 print(string.rep("=", 60) .. "\n")
