@@ -1,6 +1,6 @@
--- 👕 АВТОПОКУПКА v10.2 - ИДЕАЛЬНАЯ ХОДЬБА (Pathfinding) + 2 попытки
+-- 👕 АВТОПОКУПКА v11.0 - СУПЕРНАДЁЖНАЯ ХОДЬБА (Гарантированное перемещение) + 2 попытки
 -- GitHub: loadstring(game:HttpGet("https://raw.githubusercontent.com/l9jlevadim-svg/roblox-scripts/main/autobuy.lua"))()
--- ✅ Pathfinding | ✅ 2 попытки | ✅ Все фильтры | ✅ Гарантированная оплата
+-- ✅ Гарантированное перемещение | ✅ 2 попытки | ✅ Все фильтры | ✅ Оплата
 
 -- ============================================
 -- СЕРВИСЫ
@@ -9,7 +9,6 @@ local Workspace = game:GetService("Workspace")
 local Players = game:GetService("Players")
 local VirtualUser = game:GetService("VirtualUser")
 local UIS = game:GetService("UserInputService")
-local PathfindingService = game:GetService("PathfindingService")
 
 -- ============================================
 -- ИГРОК
@@ -20,7 +19,7 @@ local humanoid = character:WaitForChild("Humanoid")
 local rootPart = character:WaitForChild("HumanoidRootPart")
 
 print("\n" .. string.rep("=", 80))
-print("👕 АВТОПОКУПКА v10.2 - ИДЕАЛЬНАЯ ХОДЬБА")
+print("👕 АВТОПОКУПКА v11.0 - СУПЕРНАДЁЖНАЯ ХОДЬБА")
 print(string.rep("=", 80) .. "\n")
 
 -- ============================================
@@ -37,7 +36,7 @@ local SETTINGS = {
     WALK_SPEED = 18,
     JUMP_POWER = 50,
     PROMPT_ACTIVATE_DISTANCE = 5,
-    MAX_RETRIES = 2,               -- 🟢 Изменено на 2 попытки
+    MAX_RETRIES = 2,               -- 🟢 2 попытки
     MAX_FAILED_ATTEMPTS = 2,
     MIN_PRICE = 0,
     MAX_PRICE = 999999,
@@ -119,7 +118,7 @@ local function getDistance(pos1, pos2)
 end
 
 local function log(message)
-    print("[AutoBuy v10.2] " .. message)
+    print("[AutoBuy v11.0] " .. message)
 end
 
 local function formatNumber(num)
@@ -295,7 +294,7 @@ local function syncCart()
 end
 
 -- ============================================
--- 🚀 ИДЕАЛЬНАЯ ХОДЬБА (Pathfinding + антизастревание)
+-- 🔥 СУПЕРНАДЁЖНАЯ ХОДЬБА (Гарантированное перемещение)
 -- ============================================
 local function walkTo(targetPos)
     if not targetPos or not humanoid or not rootPart then
@@ -305,118 +304,97 @@ local function walkTo(targetPos)
 
     local startPos = rootPart.Position
     local totalDistance = getDistance(startPos, targetPos)
-    log("🚀 Иду: " .. math.floor(totalDistance) .. " студий")
+    log("🚀 Иду к цели (" .. math.floor(totalDistance) .. " студий)")
 
+    -- Если цель уже рядом, выходим
+    if totalDistance <= 3 then
+        log("   ✅ Уже рядом!")
+        return true
+    end
+
+    -- Сохраняем оригинальные статы
     local originalWalkSpeed = humanoid.WalkSpeed
     local originalJumpPower = humanoid.JumpPower
     humanoid.WalkSpeed = SETTINGS.WALK_SPEED
     humanoid.JumpPower = SETTINGS.JUMP_POWER
 
-    -- Строим путь с помощью PathfindingService
-    local path = PathfindingService:CreatePath({
-        AgentRadius = 2,
-        AgentHeight = 5,
-        AgentCanJump = true,
-        AgentMaxSlope = 45,
-        Costs = {
-            Water = 20,  -- обходим воду
-        }
-    })
+    -- Пробуем обычный MoveTo, но с контролем: если за 1 секунду не сдвинулся, переходим к телепортации
+    local moveStart = tick()
+    humanoid:MoveTo(targetPos)
+    local lastPos = rootPart.Position
 
-    -- Вычисляем путь
-    local success, errorMsg = pcall(function()
-        path:ComputeAsync(rootPart.Position, targetPos)
-    end)
+    local useTeleport = false
 
-    if not success then
-        log("⚠️ Ошибка построения пути: " .. tostring(errorMsg))
-    end
-
-    local waypoints = path:GetWaypoints()
-    if #waypoints == 0 then
-        log("❌ Нет пути! Пробую идти напрямую.")
-        -- Fallback: прямой MoveTo
-        humanoid:MoveTo(targetPos)
-    end
-
-    -- Проходим по waypoints
-    local currentWaypointIndex = 1
-    local stuckStart = 0
-    local lastPosition = rootPart.Position
-    local maxTime = math.min(totalDistance * 0.8, 40)  -- таймаут
-
-    local startTime = tick()
-
-    while tick() - startTime < maxTime do
+    while getDistance(rootPart.Position, targetPos) > 3 and (tick() - moveStart < 40) do
         if not running then
             humanoid.WalkSpeed = originalWalkSpeed
             humanoid.JumpPower = originalJumpPower
             return false
         end
 
-        -- Если близко к конечной цели, завершаем
-        if getDistance(rootPart.Position, targetPos) <= 3 then
-            log("   ✅ Дошел! Расстояние: " .. math.floor(getDistance(rootPart.Position, targetPos)))
-            humanoid.WalkSpeed = originalWalkSpeed
-            humanoid.JumpPower = originalJumpPower
-            return true
+        local dist = getDistance(rootPart.Position, targetPos)
+        if dist <= 3 then break end
+
+        -- Если за 1.2 секунды практически не сдвинулся, включаем режим телепортации
+        if not useTeleport and tick() - moveStart > 1.2 and getDistance(rootPart.Position, startPos) < 2 then
+            log("   ⚠️ Персонаж не двигается. Перехожу в режим принудительного перемещения.")
+            useTeleport = true
         end
 
-        -- Если waypoints кончились, идём к финальной точке
-        if currentWaypointIndex > #waypoints then
-            humanoid:MoveTo(targetPos)
-        else
-            local waypoint = waypoints[currentWaypointIndex]
-            -- Если дошли до текущего waypoint (в пределах 3 студий), переходим к следующему
-            if getDistance(rootPart.Position, waypoint.Position) <= 3 then
-                currentWaypointIndex = currentWaypointIndex + 1
-            else
-                -- Идём к waypoint
-                if waypoint.Action == Enum.PathWaypointAction.Jump then
-                    humanoid:ChangeState(Enum.HumanoidStateType.Jumping)
+        if useTeleport then
+            -- Телепортация короткими шагами (по 5 студий) с обходом препятствий
+            local direction = (targetPos - rootPart.Position).Unit
+            local stepSize = 5
+            local newPos = rootPart.Position + direction * stepSize
+
+            -- Проверяем, нет ли препятствия впереди
+            local rayParams = RaycastParams.new()
+            rayParams.FilterType = Enum.RaycastFilterType.Blacklist
+            rayParams.FilterDescendantsInstances = {character}
+            local rayResult = workspace:Raycast(rootPart.Position, direction * stepSize, rayParams)
+
+            if rayResult then
+                -- Препятствие! Пробуем сместиться в сторону
+                local right = direction:Cross(Vector3.new(0,1,0)).Unit
+                local left = -right
+                -- Проверяем оба направления
+                local function tryOffset(offsetDir)
+                    local offsetStep = rootPart.Position + offsetDir * 3 + direction * 2
+                    local offsetRay = workspace:Raycast(rootPart.Position, (offsetStep - rootPart.Position).Unit * 5, rayParams)
+                    if not offsetRay then
+                        return offsetStep
+                    end
+                    return nil
                 end
-                humanoid:MoveTo(waypoint.Position)
+                newPos = tryOffset(right) or tryOffset(left) or (rootPart.Position + direction * 2) -- fallback
+                log("   🧱 Обхожу препятствие, иду вбок.")
             end
-        end
 
-        -- Проверка застревания
-        local moved = getDistance(rootPart.Position, lastPosition)
-        if moved < 0.5 then
-            stuckStart = stuckStart + 0.2
+            -- Телепортируем персонажа на шаг
+            rootPart.CFrame = CFrame.new(newPos + Vector3.new(0, 2, 0))
+            task.wait(0.2)
         else
-            stuckStart = 0
+            -- Обычное движение: ждём и проверяем застревание
+            task.wait(0.3)
+            local moved = getDistance(rootPart.Position, lastPos)
+            if moved < 0.5 then
+                -- Если обычный MoveTo не работает, пробуем прыгнуть
+                humanoid:ChangeState(Enum.HumanoidStateType.Jumping)
+            end
+            lastPos = rootPart.Position
         end
-        lastPosition = rootPart.Position
-
-        -- Если застряли на 5 секунд – телепорт к цели
-        if stuckStart >= 5 then
-            log("   ⚠️ Застрял! Телепорт к цели...")
-            rootPart.CFrame = CFrame.new(targetPos + Vector3.new(0, 2, 0))
-            task.wait(0.5)
-            stuckStart = 0
-        end
-
-        -- Обновляем путь каждые 3 секунды, если ещё не пришли
-        if math.floor(tick() * 10) % 30 == 0 and currentWaypointIndex <= #waypoints then
-            pcall(function()
-                path:ComputeAsync(rootPart.Position, targetPos)
-                waypoints = path:GetWaypoints()
-                currentWaypointIndex = 1
-            end)
-        end
-
-        task.wait(0.15)
     end
 
-    -- Таймаут – финальный телепорт, если не дошли
-    if getDistance(rootPart.Position, targetPos) > 5 then
-        log("   🔄 Финальный телепорт...")
+    -- Финальный прямой телепорт, если расстояние всё ещё больше 3
+    if getDistance(rootPart.Position, targetPos) > 3 then
+        log("   🔄 Финальный телепорт к цели.")
         rootPart.CFrame = CFrame.new(targetPos + Vector3.new(0, 2, 0))
         task.wait(0.5)
     end
 
     humanoid.WalkSpeed = originalWalkSpeed
     humanoid.JumpPower = originalJumpPower
+    log("   ✅ Достиг цели!")
     return true
 end
 
@@ -732,7 +710,7 @@ end
 -- ============================================
 
 local screenGui = Instance.new("ScreenGui")
-screenGui.Name = "AutoBuy_v10_2"
+screenGui.Name = "AutoBuy_v11_0"
 screenGui.ResetOnSpawn = false
 screenGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
 screenGui.Parent = player:WaitForChild("PlayerGui")
@@ -756,7 +734,7 @@ local titleLabel = Instance.new("TextLabel")
 titleLabel.Size = UDim2.new(1, -45, 1, 0)
 titleLabel.Position = UDim2.new(0, 10, 0, 0)
 titleLabel.BackgroundTransparency = 1
-titleLabel.Text = " Автопокупка v10.2 | Идеальная ходьба"
+titleLabel.Text = " Автопокупка v11.0 | Суперходьба"
 titleLabel.TextColor3 = Color3.new(1, 1, 1)
 titleLabel.Font = Enum.Font.GothamBold
 titleLabel.TextSize = 16
@@ -1432,17 +1410,17 @@ updateStats()
 updateList()
 
 print("\n" .. string.rep("=", 80))
-print("✅ Скрипт v10.2 загружен!")
-print("🚀 ИДЕАЛЬНАЯ ХОДЬБА:")
-print("   - Pathfinding (точный обход препятствий)")
-print("   - Телепорт при застревании (5 сек)")
-print("   - Адаптивный таймаут")
+print("✅ Скрипт v11.0 загружен!")
+print("🔥 СУПЕРНАДЁЖНАЯ ХОДЬБА:")
+print("   - Сначала пробует обычный MoveTo")
+print("   - Если не идёт → принудительная телепортация с обходом препятствий")
+print("   - Гарантированно доходит до цели")
 print("🎨 ФИЛЬТРЫ РЕДКОСТИ:")
 for rarity, name in pairs(RARITY_NAMES) do
     print("   " .. (SETTINGS.RARITY_FILTER[rarity] and "✅" or "❌") .. " " .. name)
 end
 print("💰 ФИЛЬТР ЦЕНЫ: $" .. SETTINGS.MIN_PRICE .. " - $" .. SETTINGS.MAX_PRICE)
-print("🔄 2 попытки взять предмет (вместо 3)")
+print("🔄 2 попытки взять предмет")
 print("💰 Гарантированная оплата")
 print("📊 Полная статистика")
 print(string.rep("=", 80) .. "\n")
