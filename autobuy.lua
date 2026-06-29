@@ -1,4 +1,4 @@
--- 👕 АВТОПОКУПКА v8.0 - НОВАЯ УЛУЧШЕННАЯ ХОДЬБА
+-- 👕 АВТОПОКУПКА v8.1 - ПРОСТАЯ РАБОЧАЯ ХОДЬБА
 -- GitHub: loadstring(game:HttpGet("https://raw.githubusercontent.com/l9jlevadim-svg/roblox-scripts/main/autobuy.lua"))()
 
 local Workspace = game:GetService("Workspace")
@@ -6,7 +6,6 @@ local Players = game:GetService("Players")
 local PathfindingService = game:GetService("PathfindingService")
 local VirtualUser = game:GetService("VirtualUser")
 local UIS = game:GetService("UserInputService")
-local RunService = game:GetService("RunService")
 
 local player = Players.LocalPlayer
 local character = player.Character or player.CharacterAdded:Wait()
@@ -14,8 +13,7 @@ local humanoid = character:WaitForChild("Humanoid")
 local rootPart = character:WaitForChild("HumanoidRootPart")
 
 print("\n" .. string.rep("=", 60))
-print("👕 АВТОПОКУПКА v8.0 - НОВАЯ ХОДЬБА")
-print("✅ Плавное движение | ✅ Без случайных прыжков")
+print("👕 АВТОПОКУПКА v8.1 - ПРОСТАЯ РАБОЧАЯ ХОДЬБА")
 print(string.rep("=", 60) .. "\n")
 
 -- ============================================
@@ -32,12 +30,10 @@ local SETTINGS = {
     MAX_RETRIES = 3,
     RETRY_DELAY = 1,
     MAX_FAILED_ATTEMPTS = 2,
-    -- Настройки ходьбы
-    SHORT_DISTANCE = 30,        -- Для коротких дистанций прямой MoveTo
-    STOP_DISTANCE = 2,          -- Остановка в 2 студиях
-    STUCK_THRESHOLD = 0.3,      -- Меньше = застрял
-    STUCK_TIME = 2,             -- Секунд до реакции
-    PATH_RADIUS = 1.5,
+    -- Ходьба
+    STOP_DISTANCE = 4,          -- Останавливаемся в 4 студиях от цели
+    PROMPT_RANGE = 10,          -- fireproximityprompt работает до 10 студий
+    PATH_RADIUS = 2,
     PATH_HEIGHT = 5
 }
 
@@ -82,7 +78,7 @@ local function log(message)
 end
 
 -- ============================================
--- 🚶 НОВЫЙ БЛОК ХОДЬБЫ (УЛУЧШЕННЫЙ)
+--  ПРОСТАЯ РАБОЧАЯ ХОДЬБА
 -- ============================================
 
 local function walkTo(targetPos)
@@ -96,145 +92,118 @@ local function walkTo(targetPos)
     
     log("🚶 Иду: " .. math.floor(totalDistance) .. " студий")
     
-    -- Сохраняем оригинальные статы
+    -- Сохраняем статы
     local originalWalkSpeed = humanoid.WalkSpeed
     local originalJumpPower = humanoid.JumpPower
     
-    -- Устанавливаем скорость
     humanoid.WalkSpeed = SETTINGS.WALK_SPEED
     humanoid.JumpPower = SETTINGS.JUMP_POWER
     
-    -- Выбираем метод ходьбы в зависимости от дистанции
-    if totalDistance < SETTINGS.SHORT_DISTANCE then
-        -- КОРОТКАЯ ДИСТАНЦИЯ: прямой MoveTo без Pathfinding
-        log("   📏 Короткая дистанция - прямой MoveTo")
-        
-        local success = simpleMoveTo(targetPos)
-        
-        humanoid.WalkSpeed = originalWalkSpeed
-        humanoid.JumpPower = originalJumpPower
-        
-        return success
-    else
-        -- ДЛИННАЯ ДИСТАНЦИЯ: Pathfinding без прыжков
-        log("   📏 Длинная дистанция - Pathfinding")
-        
-        local success = pathfindMoveTo(targetPos)
-        
-        humanoid.WalkSpeed = originalWalkSpeed
-        humanoid.JumpPower = originalJumpPower
-        
-        return success
-    end
-end
-
--- Простое движение для коротких дистанций
-local function simpleMoveTo(targetPos)
-    local timeout = 0
-    local maxTimeout = 15
-    local lastPosition = rootPart.Position
-    local stuckTime = 0
-    local direction = (targetPos - rootPart.Position)
+    -- ✅ Вычисляем точку остановки (не вплотную к стене!)
+    local direction = (targetPos - startPos)
     if direction.Magnitude > 0 then
         direction = direction.Unit
     else
         direction = Vector3.new(0, 0, 1)
     end
     
-    -- Вычисляем точку остановки
-    local walkTarget = targetPos
-    local dist = getDistance(rootPart.Position, targetPos)
-    if dist > SETTINGS.STOP_DISTANCE then
+    local walkTarget
+    if totalDistance > SETTINGS.STOP_DISTANCE then
         walkTarget = targetPos - (direction * SETTINGS.STOP_DISTANCE)
+    else
+        walkTarget = targetPos
     end
     
-    humanoid:MoveTo(walkTarget)
+    log("   Точка остановки: " .. math.floor(getDistance(startPos, walkTarget)) .. " студий")
     
-    while timeout < maxTimeout do
-        if not running then return false end
-        
-        local currentPos = rootPart.Position
-        local distToTarget = getDistance(currentPos, targetPos)
-        local moved = getDistance(currentPos, lastPosition)
-        
-        -- Проверка застревания
-        if moved < SETTINGS.STUCK_THRESHOLD then
-            stuckTime = stuckTime + 0.1
-            
-            if stuckTime >= SETTINGS.STUCK_TIME then
-                log("   ⚠️ Застрял! Прыгаю и откатываюсь...")
-                humanoid:ChangeState(Enum.HumanoidStateType.Jumping)
-                task.wait(0.3)
-                
-                -- Откат назад
-                local backPos = currentPos - (direction * 3)
-                humanoid:MoveTo(backPos)
-                task.wait(0.5)
-                
-                -- Снова идём к цели
-                humanoid:MoveTo(walkTarget)
-                stuckTime = 0
-            end
-        else
-            stuckTime = 0
-        end
-        
-        lastPosition = currentPos
-        
-        -- Если дошли
-        if distToTarget <= SETTINGS.STOP_DISTANCE + 1 then
-            log("   ✅ Дошел! Расстояние: " .. math.floor(distToTarget))
-            return true
-        end
-        
-        timeout = timeout + 0.1
-        task.wait(0.1)
-    end
-    
-    log("   ⏱️ Таймаут, расстояние: " .. math.floor(getDistance(rootPart.Position, targetPos)))
-    return false
-end
-
--- Pathfinding для длинных дистанций (БЕЗ прыжков)
-local function pathfindMoveTo(targetPos)
+    -- ✅ Создаем путь
     local path = PathfindingService:CreatePath({
         AgentRadius = SETTINGS.PATH_RADIUS,
         AgentHeight = SETTINGS.PATH_HEIGHT,
-        AgentCanJump = false,     -- БЕЗ прыжков!
+        AgentCanJump = true,      -- Нужно для лестниц на 2 этаж
         AgentCanClimb = true
     })
     
     local success = pcall(function()
-        path:ComputeAsync(rootPart.Position, targetPos)
+        path:ComputeAsync(startPos, walkTarget)
     end)
     
     if not success or path.Status ~= Enum.PathStatus.Success then
         log("   ⚠️ Путь не найден, иду напрямик...")
-        return simpleMoveTo(targetPos)
+        humanoid:MoveTo(walkTarget)
+        humanoid.MoveToFinished:Wait(15)
+        humanoid.WalkSpeed = originalWalkSpeed
+        humanoid.JumpPower = originalJumpPower
+        return true
     end
     
+    -- ✅ Идём по точкам пути
     local waypoints = path:GetWaypoints()
     log("   ✅ Путь: " .. #waypoints .. " точек")
     
     for i, waypoint in ipairs(waypoints) do
-        if not running then return false end
+        if not running then
+            humanoid.WalkSpeed = originalWalkSpeed
+            humanoid.JumpPower = originalJumpPower
+            return false
+        end
         
-        -- Просто идём к точке, БЕЗ прыжков
-        local pointSuccess = simpleMoveTo(waypoint.Position)
+        -- Идём к точке
+        humanoid:MoveTo(waypoint.Position)
         
-        if not pointSuccess then
-            log("   ⚠️ Не дошел до точки " .. i)
+        -- Прыгаем ТОЛЬКО если путь говорит (лестница/препятствие)
+        if waypoint.Action == Enum.PathWaypointAction.Jump then
+            humanoid:ChangeState(Enum.HumanoidStateType.Jumping)
+        end
+        
+        -- Ждём достижения точки
+        local startTime = tick()
+        local lastPos = rootPart.Position
+        local stuckTime = 0
+        
+        while tick() - startTime < 15 do
+            if not running then
+                humanoid.WalkSpeed = originalWalkSpeed
+                humanoid.JumpPower = originalJumpPower
+                return false
+            end
+            
+            local currentPos = rootPart.Position
+            local dist = getDistance(currentPos, waypoint.Position)
+            local moved = getDistance(currentPos, lastPos)
+            
+            -- Проверка застревания
+            if moved < 0.5 then
+                stuckTime = stuckTime + 0.1
+                if stuckTime >= 3 then
+                    log("   ⚠️ Застрял! Прыгаю...")
+                    humanoid:ChangeState(Enum.HumanoidStateType.Jumping)
+                    task.wait(0.5)
+                    stuckTime = 0
+                end
+            else
+                stuckTime = 0
+            end
+            
+            lastPos = currentPos
+            
+            -- Дошли до точки
+            if dist < 3 then
+                break
+            end
+            
+            task.wait(0.1)
         end
         
         task.wait(0.1)
     end
     
-    -- Финальный подход
+    -- Восстанавливаем статы
+    humanoid.WalkSpeed = originalWalkSpeed
+    humanoid.JumpPower = originalJumpPower
+    
     local finalDist = getDistance(rootPart.Position, targetPos)
-    if finalDist > SETTINGS.STOP_DISTANCE + 2 then
-        log("    Финальный подход...")
-        simpleMoveTo(targetPos)
-    end
+    log("   📍 Расстояние до цели: " .. math.floor(finalDist))
     
     return true
 end
@@ -432,7 +401,7 @@ local function findClothes()
 end
 
 -- ============================================
--- АКТИВАЦИЯ PROMPT
+-- АКТИВАЦИЯ PROMPT (РАБОТАЕТ НА РАССТОЯНИИ!)
 -- ============================================
 
 local function activatePrompt(prompt)
@@ -443,29 +412,21 @@ local function activatePrompt(prompt)
     
     log("   🔘 Активирую prompt...")
     
-    -- Проверяем расстояние
-    local promptPos = findPosition(prompt) or findPosition(prompt.Parent)
-    if promptPos then
-        local dist = getDistance(rootPart.Position, promptPos)
-        log("   📍 Расстояние: " .. math.floor(dist) .. " студий")
-        
-        if dist > 5 then
-            log("   🚶 Подхожу...")
-            walkTo(promptPos)
-            task.wait(0.5)
-        end
-    end
-    
-    -- Метод 1: fireproximityprompt
+    -- ✅ fireproximityprompt работает на расстоянии до 10-15 студий!
+    -- Не нужно подходить вплотную!
     if fireproximityprompt then
-        local ok = pcall(function() fireproximityprompt(prompt) end)
+        local ok = pcall(function() 
+            fireproximityprompt(prompt) 
+        end)
         if ok then 
-            log("   ✅ fireproximityprompt")
+            log("   ✅ fireproximityprompt сработал!")
             return true 
         end
+        log("   ⚠️ fireproximityprompt не сработал")
     end
     
     -- Метод 2: InputHold
+    log("    Пробую InputHold...")
     local ok = pcall(function()
         prompt:InputHoldBegin()
         task.wait(1.5)
@@ -473,11 +434,11 @@ local function activatePrompt(prompt)
     end)
     
     if ok then
-        log("   ✅ InputHold")
+        log("   ✅ InputHold сработал!")
         return true
     end
     
-    log("   ❌ Не удалось")
+    log("   ❌ Оба метода не сработали")
     return false
 end
 
@@ -486,7 +447,7 @@ end
 -- ============================================
 
 local function tryTakeItem(item)
-    log("🎯 Пробую взять: " .. item.name)
+    log(" Пробую взять: " .. item.name)
     
     if item.unavailable then return false end
     
@@ -504,7 +465,7 @@ local function tryTakeItem(item)
             task.wait(SETTINGS.RETRY_DELAY)
             
             if not item.obj or not item.obj.Parent then
-                log("   ❌ Prompt исчез")
+                log("    Prompt исчез")
                 item.unavailable = true
                 return false
             end
@@ -518,7 +479,7 @@ local function tryTakeItem(item)
             return true
         end
         
-        log("    Попытка #" .. attempt .. " не удалась")
+        log("   ❌ Попытка #" .. attempt .. " не удалась")
     end
     
     log("   ❌ Все попытки неудачны")
@@ -580,7 +541,7 @@ end
 -- ============================================
 
 local screenGui = Instance.new("ScreenGui")
-screenGui.Name = "AutoBuy_v8_0"
+screenGui.Name = "AutoBuy_v8_1"
 screenGui.ResetOnSpawn = false
 screenGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
 screenGui.Parent = player:WaitForChild("PlayerGui")
@@ -604,7 +565,7 @@ local titleLabel = Instance.new("TextLabel")
 titleLabel.Size = UDim2.new(1, -45, 1, 0)
 titleLabel.Position = UDim2.new(0, 10, 0, 0)
 titleLabel.BackgroundTransparency = 1
-titleLabel.Text = " Автопокупка v8.0 | Новая ходьба"
+titleLabel.Text = "👕 Автопокупка v8.1 | Простая ходьба"
 titleLabel.TextColor3 = Color3.new(1, 1, 1)
 titleLabel.Font = Enum.Font.GothamBold
 titleLabel.TextSize = 16
@@ -669,7 +630,7 @@ filterBox.Size = UDim2.new(1, -20, 0, 40)
 filterBox.Position = UDim2.new(0, 10, 0, 60)
 filterBox.BackgroundColor3 = Color3.fromRGB(30, 30, 30)
 filterBox.TextColor3 = Color3.new(1, 1, 1)
-filterBox.PlaceholderText = " Фильтр..."
+filterBox.PlaceholderText = "🔍 Фильтр..."
 filterBox.Text = ""
 filterBox.Font = Enum.Font.Gotham
 filterBox.TextSize = 14
@@ -731,7 +692,7 @@ local logLabel = Instance.new("TextLabel")
 logLabel.Size = UDim2.new(1, -20, 0, 90)
 logLabel.Position = UDim2.new(0, 10, 0, 265)
 logLabel.BackgroundTransparency = 1
-logLabel.Text = " Лог:"
+logLabel.Text = "📋 Лог:"
 logLabel.TextColor3 = Color3.fromRGB(180, 180, 180)
 logLabel.Font = Enum.Font.Code
 logLabel.TextSize = 11
@@ -787,7 +748,7 @@ local function updateList()
             nameLabel.Size = UDim2.new(1, -10, 0, 24)
             nameLabel.Position = UDim2.new(0, 10, 0, 3)
             nameLabel.BackgroundTransparency = 1
-            nameLabel.Text = (item.taken and "✅ " or "📦 ") .. item.name .. unavailableText
+            nameLabel.Text = (item.taken and "✅ " or " ") .. item.name .. unavailableText
             nameLabel.TextColor3 = item.taken and Color3.fromRGB(100, 255, 100) or (item.unavailable and Color3.fromRGB(255, 100, 100) or Color3.new(1, 1, 1))
             nameLabel.Font = Enum.Font.GothamBold
             nameLabel.TextSize = 12
@@ -877,7 +838,7 @@ local function goToPay()
             updateStats()
         else
             log("❌ ОПЛАТА ПРОВАЛЕНА!")
-            addLog("❌ Оплата провалена!")
+            addLog(" Оплата провалена!")
         end
     end
 end
@@ -892,13 +853,13 @@ local function mainLoop()
     while running do
         resetAll()
         
-        log("\n🎯 Сортировка...")
-        addLog("🎯 Сортировка...")
+        log("\n Сортировка...")
+        addLog(" Сортировка...")
         sortByDistance()
         updateList()
         
-        addLog("🔄 Новый цикл!")
-        statusLabel.Text = "🔄 Начинаю..."
+        addLog(" Новый цикл!")
+        statusLabel.Text = " Начинаю..."
         statusLabel.TextColor3 = Color3.fromRGB(255, 200, 100)
         
         local shouldPay = false
@@ -931,8 +892,8 @@ local function mainLoop()
             
             if not running then break end
             
-            log("\n Цель: " .. item.name .. " [" .. item.shop .. "]")
-            addLog(" " .. item.name)
+            log("\n🎯 Цель: " .. item.name .. " [" .. item.shop .. "]")
+            addLog("🚶 " .. item.name)
             statusLabel.Text = "🚶 " .. item.name
             
             if item.position then
@@ -940,7 +901,7 @@ local function mainLoop()
                 task.wait(0.5)
             end
             
-            addLog("🤖 Беру...")
+            addLog(" Беру...")
             statusLabel.Text = "🤖 Беру " .. item.name
             
             local success = tryTakeItem(item)
@@ -984,7 +945,7 @@ local function mainLoop()
         end
         
         log("\n⏳ Ожидание (10 мин)...")
-        addLog(" Жду 10 мин...")
+        addLog("⏳ Жду 10 мин...")
         statusLabel.Text = "⏳ Ожидание..."
         statusLabel.TextColor3 = Color3.fromRGB(150, 150, 255)
         
@@ -1032,13 +993,13 @@ updateStats()
 updateList()
 
 print("\n" .. string.rep("=", 60))
-print("✅ Скрипт v8.0 загружен!")
-print(" НОВАЯ ХОДЬБА:")
-print("   - Короткие дистанции (<30): прямой MoveTo")
-print("   - Длинные дистанции: Pathfinding БЕЗ прыжков")
-print("   - Остановка в " .. SETTINGS.STOP_DISTANCE .. " студиях")
-print("   - Быстрая реакция на застревание (" .. SETTINGS.STUCK_TIME .. "с)")
+print("✅ Скрипт v8.1 загружен!")
+print(" ПРОСТАЯ ХОДЬБА:")
+print("   - Pathfinding с AgentCanJump=true (для лестниц)")
+print("   - Остановка в " .. SETTINGS.STOP_DISTANCE .. " студиях от цели")
+print("   - fireproximityprompt работает на расстоянии до " .. SETTINGS.PROMPT_RANGE .. " студий")
+print("   - Не нужно подходить вплотную!")
 print("🔄 3 попытки взять предмет")
 print("🛒 Синхронизация корзины")
-print(" Гарантированная оплата")
+print("💰 Гарантированная оплата")
 print(string.rep("=", 60) .. "\n")
