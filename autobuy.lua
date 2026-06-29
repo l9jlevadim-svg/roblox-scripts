@@ -1,7 +1,8 @@
--- 👕 АВТОПОКУПКА v7.1 - ДВИЖЕНИЕ + БЫСТРАЯ ОПЛАТА
+-- 👕 АВТОПОКУПКА v7.2 - СОРТИРОВКА ПО БЛИЗОСТИ
 -- GitHub: loadstring(game:HttpGet("https://raw.githubusercontent.com/l9jlevadim-svg/roblox-scripts/main/autobuy.lua"))()
 -- ✅ Двигаемое окно | ✅ Идеальная ходьба | ✅ Пропуск купленных другими
 -- ✅ Движение каждые 2 сек | ✅ Быстрая оплата
+-- ✅ Сортировка по ближайшим магазинам | ✅ При запуске идёт в ближайший
 
 local Workspace = game:GetService("Workspace")
 local Players = game:GetService("Players")
@@ -15,9 +16,10 @@ local humanoid = character:WaitForChild("Humanoid")
 local rootPart = character:WaitForChild("HumanoidRootPart")
 
 print("\n" .. string.rep("=", 60))
-print("👕 АВТОПОКУПКА v7.1 - ДВИЖЕНИЕ + БЫСТРАЯ ОПЛАТА")
+print("👕 АВТОПОКУПКА v7.2 - СОРТИРОВКА ПО БЛИЗОСТИ")
 print("✅ Пропускает купленные другими | ✅ Двигаемое окно")
 print("✅ Движение каждые 2 сек | ✅ Быстрая оплата")
+print("✅ Сортировка по ближайшим магазинам")
 print(string.rep("=", 60) .. "\n")
 
 -- ============================================
@@ -39,7 +41,7 @@ local SETTINGS = {
     MOVE_TIMEOUT = 25,
     TAKE_TIMEOUT = 5,
     MAX_FAILED_ATTEMPTS = 2,
-    MOVE_INTERVAL = 2  -- ✅ Движение каждые 2 секунды
+    MOVE_INTERVAL = 2
 }
 
 -- ============================================
@@ -53,7 +55,7 @@ local paidCount = 0
 local shopLimits = {}
 local lastTakeTime = 0
 local shopZones = {}
-local lastMoveTime = 0  -- ✅ Для отслеживания движения
+local lastMoveTime = 0
 
 -- ============================================
 -- ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ
@@ -83,14 +85,42 @@ local function log(message)
 end
 
 -- ============================================
--- ✅ ДВИЖЕНИЕ ТЕЛОМ КАЖДЫЕ 2 СЕКУНДЫ
+-- 🎯 НОВАЯ ФУНКЦИЯ: СОРТИРОВКА ПО БЛИЗОСТИ
+-- ============================================
+
+local function sortByDistance()
+    if not rootPart then return end
+    
+    local currentPos = rootPart.Position
+    
+    -- Сортируем таблицу clothes по расстоянию от текущей позиции
+    table.sort(clothes, function(a, b)
+        local distA = a.position and getDistance(currentPos, a.position) or math.huge
+        local distB = b.position and getDistance(currentPos, b.position) or math.huge
+        return distA < distB
+    end)
+    
+    log("🎯 Отсортировано по близости!")
+    
+    -- Показываем порядок
+    for i, item in ipairs(clothes) do
+        if item.position then
+            local dist = getDistance(currentPos, item.position)
+            if i <= 5 then  -- Показываем только первые 5
+                log("   " .. i .. ". " .. item.name .. " [" .. item.shop .. "] - " .. math.floor(dist) .. " студий")
+            end
+        end
+    end
+end
+
+-- ============================================
+-- ДВИЖЕНИЕ ТЕЛОМ КАЖДЫЕ 2 СЕКУНДЫ
 -- ============================================
 
 local function doQuickMove()
     local currentTime = tick()
     if currentTime - lastMoveTime >= SETTINGS.MOVE_INTERVAL then
         if humanoid and humanoid.Health > 0 then
-            -- Небольшое движение в случайном направлении (без прыжков!)
             local randomDir = Vector3.new(
                 math.random(-2, 2),
                 0,
@@ -448,7 +478,7 @@ end
 -- ============================================
 
 local screenGui = Instance.new("ScreenGui")
-screenGui.Name = "AutoBuy_v7_1"
+screenGui.Name = "AutoBuy_v7_2"
 screenGui.ResetOnSpawn = false
 screenGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
 screenGui.Parent = player:WaitForChild("PlayerGui")
@@ -472,7 +502,7 @@ local titleLabel = Instance.new("TextLabel")
 titleLabel.Size = UDim2.new(1, -45, 1, 0)
 titleLabel.Position = UDim2.new(0, 10, 0, 0)
 titleLabel.BackgroundTransparency = 1
-titleLabel.Text = "👕 Автопокупка v7.1 | Движение + Быстрая оплата"
+titleLabel.Text = "👕 Автопокупка v7.2 | Сортировка по близости"
 titleLabel.TextColor3 = Color3.new(1, 1, 1)
 titleLabel.Font = Enum.Font.GothamBold
 titleLabel.TextSize = 16
@@ -712,13 +742,13 @@ local function resetAll()
     shopLimits = {}
     takenCount = 0
     lastTakeTime = 0
-    lastMoveTime = tick()  -- ✅ Сбрасываем таймер движения
+    lastMoveTime = tick()
     addLog("🔄 Сброс счетчиков")
     updateList()
 end
 
 -- ============================================
--- ⚡ БЫСТРАЯ ФУНКЦИЯ ОПЛАТЫ
+-- БЫСТРАЯ ФУНКЦИЯ ОПЛАТЫ
 -- ============================================
 
 local function goToPay()
@@ -741,7 +771,7 @@ local function goToPay()
     
     if seller.position then
         walkTo(seller.position)
-        task.wait(0.5)  -- ⚡ БЫСТРЕЕ: было 1, стало 0.5
+        task.wait(0.5)
     end
     
     log("💬 Разговор с продавцом...")
@@ -749,7 +779,7 @@ local function goToPay()
     statusLabel.Text = "💬 Разговор..."
     
     activatePrompt(seller.obj)
-    task.wait(1)  -- ⚡ БЫСТРЕЕ: было 3, стало 1!
+    task.wait(1)
     
     log("💳 Оплата...")
     addLog("💳 Оплачиваю...")
@@ -762,7 +792,7 @@ local function goToPay()
         log("✅ Оплачено! Всего оплат: " .. paidCount)
         addLog("✅ Оплачено! (" .. paidCount .. ")")
         updateStats()
-        task.wait(1)  -- ⚡ БЫСТРЕЕ: было 2, стало 1
+        task.wait(1)
     else
         log("⚠️  Не удалось оплатить")
         addLog("⚠️  Ошибка оплаты")
@@ -770,7 +800,7 @@ local function goToPay()
 end
 
 -- ============================================
--- ОСНОВНОЙ ЦИКЛ
+-- 🎯 ОСНОВНОЙ ЦИКЛ (С СОРТИРОВКОЙ)
 -- ============================================
 
 local function mainLoop()
@@ -778,8 +808,15 @@ local function mainLoop()
     
     while running do
         resetAll()
+        
+        -- 🎯 СОРТИРОВКА ПО БЛИЗОСТИ В НАЧАЛЕ ЦИКЛА
+        log("\n🎯 Сортировка магазинов по близости...")
+        addLog("🎯 Сортировка...")
+        sortByDistance()
+        updateList()
+        
         addLog("🔄 Новый цикл начался!")
-        statusLabel.Text = "🔄 Начинаю обход магазинов..."
+        statusLabel.Text = "🔄 Начинаю с ближайшего магазина..."
         statusLabel.TextColor3 = Color3.fromRGB(255, 200, 100)
         
         local shouldPay = false
@@ -808,16 +845,10 @@ local function mainLoop()
             -- Задержка с движением каждые 2 сек
             local waitTime = SETTINGS.DELAY_ITEMS - (tick() - lastTakeTime)
             if waitTime > 0 then
-                local waitSec = math.ceil(waitTime)
-                log("⏳ Задержка: " .. waitSec .. " сек...")
-                addLog("⏳ Жду " .. waitSec .. "с...")
-                statusLabel.Text = "⏳ Задержка " .. waitSec .. "с..."
-                
-                -- ✅ Во время задержки двигаемся каждые 2 сек
                 local waitStart = tick()
                 while tick() - waitStart < waitTime do
                     if not running then return end
-                    doQuickMove()  -- ✅ Движение каждые 2 сек
+                    doQuickMove()
                     task.wait(0.5)
                 end
             end
@@ -867,6 +898,14 @@ local function mainLoop()
         
         if shouldPay or takenCount > 0 then
             goToPay()
+            
+            -- 🎯 ПОСЛЕ ОПЛАТЫ СНОВА СОРТИРУЕМ ПО БЛИЗОСТИ
+            if running then
+                log("\n🎯 Пересортировка после оплаты...")
+                addLog("🎯 Ищу ближайший магазин...")
+                sortByDistance()
+                updateList()
+            end
         else
             log("❌ Ничего не взял в этом цикле")
             addLog("❌ Пусто")
@@ -887,7 +926,6 @@ local function mainLoop()
                 log("   Осталось: " .. mins .. "м " .. secs .. "с")
             end
             
-            -- ✅ Во время ожидания тоже двигаемся каждые 2 сек
             if i % 2 == 0 then
                 doQuickMove()
             end
@@ -923,6 +961,13 @@ startBtn.MouseButton1Click:Connect(function()
         running = true
         startBtn.Text = "⏹️ ОСТАНОВИТЬ"
         startBtn.BackgroundColor3 = Color3.fromRGB(220, 50, 50)
+        
+        -- 🎯 ПРИ ЗАПУСКЕ СРАЗУ СОРТИРУЕМ ПО БЛИЗОСТИ
+        log("\n🎯 Сортировка магазинов по близости...")
+        addLog("🎯 Ищу ближайший магазин...")
+        sortByDistance()
+        updateList()
+        
         task.spawn(mainLoop)
     end
 end)
@@ -937,6 +982,11 @@ end)
 
 findShops()
 findClothes()
+
+-- 🎯 СОРТИРОВКА ПРИ ЗАГРУЗКЕ
+log("\n🎯 Начальная сортировка по близости...")
+sortByDistance()
+
 updateStats()
 updateList()
 
@@ -944,6 +994,7 @@ print("\n" .. string.rep("=", 60))
 print("✅ Скрипт успешно загружен!")
 print("📊 Найдено магазинов: " .. #shopZones)
 print("📊 Найдено одежды: " .. #clothes)
+print("🎯 Отсортировано по близости!")
 print("⏱️  Таймаут на предмет: " .. SETTINGS.TAKE_TIMEOUT .. " сек")
 print("❌ Макс неудачных попыток: " .. SETTINGS.MAX_FAILED_ATTEMPTS)
 print("🎯 После " .. SETTINGS.MAX_TOTAL .. " товаров → оплата!")
