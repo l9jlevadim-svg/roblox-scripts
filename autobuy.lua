@@ -1,5 +1,5 @@
--- 👕 АВТОПОКУПКА v12.1 – УНИВЕРСАЛЬНЫЙ ПОИСК РЕДКОСТИ/ЦЕНЫ ПО ВСЕМ GUI
--- ✅ Ищет NameLabel, RarityText, PriceLabel во всех ScreenGui | ✅ Фильтры | ✅ Суперходьба | ✅ 2 попытки
+-- 👕 АВТОПОКУПКА v15.0 – ИДЕАЛЬНАЯ ХОДЬБА (Pathfinding) + ФИЛЬТР ТОЛЬКО ПО ЦЕНЕ
+-- ✅ Pathfinding (обходит стены, поднимается по лестницам) | ✅ Только фильтр цены | ✅ 2 попытки
 
 -- ============================================
 -- СЕРВИСЫ
@@ -8,6 +8,8 @@ local Workspace = game:GetService("Workspace")
 local Players = game:GetService("Players")
 local VirtualUser = game:GetService("VirtualUser")
 local UIS = game:GetService("UserInputService")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local PathfindingService = game:GetService("PathfindingService")
 
 -- ============================================
 -- ИГРОК
@@ -18,7 +20,7 @@ local humanoid = character:WaitForChild("Humanoid")
 local rootPart = character:WaitForChild("HumanoidRootPart")
 
 print("\n" .. string.rep("=", 80))
-print("👕 АВТОПОКУПКА v12.1 – УНИВЕРСАЛЬНЫЙ ПОИСК GUI")
+print("👕 АВТОПОКУПКА v15.0 – ИДЕАЛЬНАЯ ХОДЬБА + ФИЛЬТР ЦЕНЫ")
 print(string.rep("=", 80) .. "\n")
 
 -- ============================================
@@ -35,11 +37,11 @@ local SETTINGS = {
     WALK_SPEED = 18,
     JUMP_POWER = 50,
     PROMPT_ACTIVATE_DISTANCE = 5,
-    GUI_SCAN_TIMEOUT = 2,          -- секунд ожидания появления данных в GUI
-    MAX_RETRIES = 2,               -- 2 попытки взять предмет
+    MAX_RETRIES = 2,
     MAX_FAILED_ATTEMPTS = 2,
     MIN_PRICE = 0,
     MAX_PRICE = 999999,
+    -- Редкость больше не используется в фильтре, но оставлена для GUI
     RARITY_FILTER = {
         common = true,
         uncommon = true,
@@ -48,7 +50,14 @@ local SETTINGS = {
         legendary = true
     },
     NAME_FILTER = "",
-    SHOP_FILTER = ""
+    SHOP_FILTER = "",
+    RARITY_BY_PRICE = {
+        { min = 10000, rarity = "legendary" },
+        { min = 5000,  rarity = "epic" },
+        { min = 2000,  rarity = "rare" },
+        { min = 500,   rarity = "uncommon" },
+        { min = 0,     rarity = "common" }
+    }
 }
 
 -- ============================================
@@ -70,15 +79,6 @@ local RARITY_NAMES = {
     legendary = "Легендарная"
 }
 
--- Маппинг английских названий редкостей (может быть Common, Rare etc.)
-local RARITY_ENGLISH_MAP = {
-    ["common"] = "common",
-    ["uncommon"] = "uncommon",
-    ["rare"] = "rare",
-    ["epic"] = "epic",
-    ["legendary"] = "legendary"
-}
-
 -- ============================================
 -- ПЕРЕМЕННЫЕ
 -- ============================================
@@ -96,15 +96,72 @@ local totalMoneySpent = 0
 local cycleCount = 0
 
 -- ============================================
+-- ЗАГРУЗКА КОНФИГОВ (как у друга)
+-- ============================================
+local function safeRequire(inst)
+    if not inst then return nil end
+    local ok, mod = pcall(require, inst)
+    return ok and mod or nil
+end
+
+local Configs        = ReplicatedStorage:FindFirstChild("Configs")
+local ClothingConfig = safeRequire(ReplicatedStorage:FindFirstChild("ClothingConfig"))
+local AccessoryCfg   = safeRequire(Configs and Configs:FindFirstChild("AccessoryConfig"))
+
+local NAME_INDEX = {}
+if ClothingConfig or AccessoryCfg then
+    local function addToIndex(name, fair, profile)
+        if name and fair then
+            NAME_INDEX[tostring(name):lower()] = { fair = fair, profile = profile or "normal" }
+        end
+    end
+    if ClothingConfig and ClothingConfig.SHOP_ITEMS then
+        local function scan(node, depth)
+            if type(node) ~= "table" or depth > 6 then return end
+            if node.name and (node.fairPrice or node.value) then
+                addToIndex(node.name, node.fairPrice or node.value, node.economyProfile)
+                return
+            end
+            for _, c in pairs(node) do scan(c, depth + 1) end
+        end
+        scan(ClothingConfig.SHOP_ITEMS, 0)
+    end
+    if AccessoryCfg then
+        local function scanAcc(node, depth)
+            if type(node) ~= "table" or depth > 6 then return end
+            if node.name and (node.fairPrice or node.value) then
+                addToIndex(node.name, node.fairPrice or node.value, node.economyProfile)
+                return
+            end
+            for _, c in pairs(node) do scanAcc(c, depth + 1) end
+        end
+        scanAcc(AccessoryCfg, 0)
+    end
+    log("📚 Загружен индекс цен: " .. table.maxn(NAME_INDEX) .. " предметов")
+else
+    log("⚠️  Конфиги не найдены, цену будем получать через SlotPriceReveal")
+end
+
+local function getFairPrice(name)
+    local rec = NAME_INDEX[tostring(name or ""):lower()]
+    return rec and rec.fair
+end
+
+local function rarityByPrice(price)
+    for _, tier in ipairs(SETTINGS.RARITY_BY_PRICE) do
+        if price >= tier.min then return tier.rarity end
+    end
+    return "common"
+end
+
+-- ============================================
 -- ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ
 -- ============================================
 local function findPosition(obj)
     local checkObj = obj
     for i = 1, 6 do
         if checkObj then
-            if checkObj:IsA("BasePart") then
-                return checkObj.CFrame.Position
-            end
+            if checkObj:IsA("BasePart") then return checkObj.CFrame.Position end
             local part = checkObj:FindFirstChildWhichIsA("BasePart")
             if part then return part.CFrame.Position end
             checkObj = checkObj.Parent
@@ -118,87 +175,20 @@ local function getDistance(pos1, pos2)
 end
 
 local function log(message)
-    print("[AutoBuy v12.1] " .. message)
+    print("[AutoBuy v15.0] " .. message)
 end
 
 local function formatNumber(num)
-    if num >= 1000000 then
-        return string.format("%.1fM", num / 1000000)
-    elseif num >= 1000 then
-        return string.format("%.1fK", num / 1000)
-    else
-        return tostring(num)
-    end
+    if num >= 1000000 then return string.format("%.1fM", num / 1000000)
+    elseif num >= 1000 then return string.format("%.1fK", num / 1000)
+    else return tostring(num) end
 end
 
 -- ============================================
--- 🔍 УНИВЕРСАЛЬНЫЙ ПОИСК РЕДКОСТИ/ЦЕНЫ ВО ВСЕХ SCREENGUI
--- ============================================
-local function getItemDataFromGUI()
-    local playerGui = player:FindFirstChild("PlayerGui")
-    if not playerGui then return nil, nil end
-
-    -- Перебираем все ScreenGui
-    for _, gui in ipairs(playerGui:GetChildren()) do
-        if gui:IsA("ScreenGui") and gui.Enabled then
-            -- Ищем внутри любые TextLabel/TextBox с нужными именами
-            local rarityEl = gui:FindFirstChild("RarityText", true)
-            local priceEl = gui:FindFirstChild("PriceLabel", true)
-            local nameEl = gui:FindFirstChild("NameLabel", true)   -- для проверки, что GUI активен и показывает предмет
-
-            -- Если нашли хотя бы один из ключевых элементов, считаем GUI активным
-            if nameEl or rarityEl or priceEl then
-                local rarity = nil
-                if rarityEl and rarityEl:IsA("TextLabel") then
-                    local raw = rarityEl.Text:lower()
-                    rarity = RARITY_ENGLISH_MAP[raw]
-                    if not rarity then
-                        for eng, key in pairs(RARITY_ENGLISH_MAP) do
-                            if raw:find(eng) then
-                                rarity = key
-                                break
-                            end
-                        end
-                    end
-                end
-
-                local price = 0
-                if priceEl and priceEl:IsA("TextLabel") then
-                    local num = priceEl.Text:match("(%d+)")
-                    if num then price = tonumber(num) or 0 end
-                end
-
-                -- Если нашли и редкость и цену – возвращаем
-                if rarity and price then
-                    return rarity, price
-                end
-            end
-        end
-    end
-    return nil, nil
-end
-
--- Ожидание появления данных в GUI (до таймаута)
-local function waitForItemData(timeout)
-    local start = tick()
-    while tick() - start < timeout do
-        local r, p = getItemDataFromGUI()
-        if r and p then return r, p end
-        task.wait(0.1)
-    end
-    return nil, nil
-end
-
--- ============================================
--- ФИЛЬТРАЦИЯ
+-- ФИЛЬТРАЦИЯ (ТОЛЬКО ПО ЦЕНЕ)
 -- ============================================
 local function shouldBuyItem(item)
-    if not item.rarity or not item.price then return false end
-
-    if not SETTINGS.RARITY_FILTER[item.rarity] then
-        log("⛔ " .. item.name .. " исключён: редкость " .. (RARITY_NAMES[item.rarity] or item.rarity) .. " выключена")
-        return false
-    end
+    if not item.price then return false end
 
     if item.price < SETTINGS.MIN_PRICE or item.price > SETTINGS.MAX_PRICE then
         log("⛔ " .. item.name .. " исключён: цена $" .. item.price .. " вне диапазона " .. SETTINGS.MIN_PRICE .. "-" .. SETTINGS.MAX_PRICE)
@@ -223,8 +213,7 @@ end
 -- ============================================
 local function getRealCartCount()
     if not player:FindFirstChild("PlayerGui") then return nil end
-    local playerGui = player.PlayerGui
-    for _, gui in ipairs(playerGui:GetChildren()) do
+    for _, gui in ipairs(player.PlayerGui:GetChildren()) do
         for _, child in ipairs(gui:GetDescendants()) do
             if child:IsA("TextLabel") or child:IsA("TextButton") then
                 local text = child.Text or ""
@@ -244,16 +233,18 @@ end
 
 local function syncCart()
     local realCount = getRealCartCount()
-    if realCount ~= nil and realCount ~= takenCount then
-        log("🔄 Синхронизация: скрипт=" .. takenCount .. " | реальная=" .. realCount)
-        takenCount = realCount
+    if realCount ~= nil then
+        if realCount ~= takenCount then
+            log("🔄 Синхронизация: скрипт=" .. takenCount .. " | реальная=" .. realCount)
+            takenCount = realCount
+        end
         return realCount
     end
     return takenCount
 end
 
 -- ============================================
--- 🔥 СУПЕРНАДЁЖНАЯ ХОДЬБА (Гарантированное перемещение)
+-- 🚀 ИДЕАЛЬНАЯ ХОДЬБА (Pathfinding)
 -- ============================================
 local function walkTo(targetPos)
     if not targetPos or not humanoid or not rootPart then
@@ -275,53 +266,87 @@ local function walkTo(targetPos)
     humanoid.WalkSpeed = SETTINGS.WALK_SPEED
     humanoid.JumpPower = SETTINGS.JUMP_POWER
 
-    local moveStart = tick()
-    humanoid:MoveTo(targetPos)
-    local lastPos = rootPart.Position
-    local useTeleport = false
+    -- Параметры пути
+    local pathParams = {
+        AgentRadius = 2,
+        AgentHeight = 5,
+        AgentCanJump = true,
+        AgentMaxSlope = 45,
+        Costs = { Water = 20 }
+    }
+    local path = PathfindingService:CreatePath(pathParams)
 
-    while getDistance(rootPart.Position, targetPos) > 3 and (tick() - moveStart < 40) do
+    -- Вычисляем путь
+    local success, err = pcall(function() path:ComputeAsync(rootPart.Position, targetPos) end)
+    if not success or path.Status ~= Enum.PathStatus.Success then
+        log("   ⚠️ Путь не построен, пробую идти напрямую")
+    end
+
+    local waypoints = path:GetWaypoints()
+    if #waypoints == 0 then
+        log("   ❌ Нет маршрута. Попытка телепорта...")
+        rootPart.CFrame = CFrame.new(targetPos + Vector3.new(0, 2, 0))
+        task.wait(0.5)
+        humanoid.WalkSpeed = originalWalkSpeed
+        humanoid.JumpPower = originalJumpPower
+        return getDistance(rootPart.Position, targetPos) <= 3
+    end
+
+    local lastPosition = rootPart.Position
+    local stuckTime = 0
+    local currentWaypoint = 1
+    local startTime = tick()
+    local maxTime = math.min(totalDistance * 0.7, 45)
+
+    while tick() - startTime < maxTime do
         if not running then
             humanoid.WalkSpeed = originalWalkSpeed
             humanoid.JumpPower = originalJumpPower
             return false
         end
 
-        if not useTeleport and tick() - moveStart > 1.2 and getDistance(rootPart.Position, startPos) < 2 then
-            log("   ⚠️ Персонаж не двигается. Перехожу в режим принудительного перемещения.")
-            useTeleport = true
+        local currentPos = rootPart.Position
+        local distToTarget = getDistance(currentPos, targetPos)
+        if distToTarget <= 3 then break end
+
+        -- Двигаемся к текущему waypoint
+        if currentWaypoint <= #waypoints then
+            local wp = waypoints[currentWaypoint]
+            local wpDist = getDistance(currentPos, wp.Position)
+            if wpDist <= 3 then
+                currentWaypoint = currentWaypoint + 1
+            else
+                if wp.Action == Enum.PathWaypointAction.Jump then
+                    humanoid:ChangeState(Enum.HumanoidStateType.Jumping)
+                end
+                humanoid:MoveTo(wp.Position)
+            end
+        else
+            humanoid:MoveTo(targetPos)
         end
 
-        if useTeleport then
-            local direction = (targetPos - rootPart.Position).Unit
-            local stepSize = 5
-            local newPos = rootPart.Position + direction * stepSize
-            local rayParams = RaycastParams.new()
-            rayParams.FilterType = Enum.RaycastFilterType.Blacklist
-            rayParams.FilterDescendantsInstances = {character}
-            local rayResult = workspace:Raycast(rootPart.Position, direction * stepSize, rayParams)
-            if rayResult then
-                local right = direction:Cross(Vector3.new(0,1,0)).Unit
-                local left = -right
-                local function tryOffset(offsetDir)
-                    local offsetStep = rootPart.Position + offsetDir * 3 + direction * 2
-                    local offsetRay = workspace:Raycast(rootPart.Position, (offsetStep - rootPart.Position).Unit * 5, rayParams)
-                    if not offsetRay then return offsetStep end
-                    return nil
-                end
-                newPos = tryOffset(right) or tryOffset(left) or (rootPart.Position + direction * 2)
-                log("   🧱 Обхожу препятствие, иду вбок.")
-            end
-            rootPart.CFrame = CFrame.new(newPos + Vector3.new(0, 2, 0))
-            task.wait(0.2)
+        -- Проверка застревания
+        local moved = getDistance(currentPos, lastPosition)
+        if moved < 0.5 then
+            stuckTime = stuckTime + 0.2
         else
-            task.wait(0.3)
-            local moved = getDistance(rootPart.Position, lastPos)
-            if moved < 0.5 then
-                humanoid:ChangeState(Enum.HumanoidStateType.Jumping)
-            end
-            lastPos = rootPart.Position
+            stuckTime = 0
         end
+        lastPosition = currentPos
+
+        if stuckTime >= 4 then
+            log("   ⚠️ Застрял! Телепорт к следующему waypoint...")
+            local teleportPos = (currentWaypoint <= #waypoints and waypoints[currentWaypoint].Position) or targetPos
+            rootPart.CFrame = CFrame.new(teleportPos + Vector3.new(0, 2, 0))
+            stuckTime = 0
+            task.wait(0.3)
+            -- Перестраиваем путь после телепорта
+            pcall(function() path:ComputeAsync(rootPart.Position, targetPos) end)
+            waypoints = path:GetWaypoints()
+            currentWaypoint = 1
+        end
+
+        task.wait(0.15)
     end
 
     if getDistance(rootPart.Position, targetPos) > 3 then
@@ -365,7 +390,7 @@ local function doQuickMove()
 end
 
 -- ============================================
--- ПОИСК МАГАЗИНОВ И ОДЕЖДЫ
+-- ПОИСК МАГАЗИНОВ И ОДЕЖДЫ (с автоматической ценой)
 -- ============================================
 local function findShops()
     log("🔍 Поиск магазинов...")
@@ -396,20 +421,7 @@ local function findClothes()
             local inShop = path:find("Shop_") or path:find("Shop") or path:find("Store") or path:find("Clothing")
             if inShop and (action:find("Взять") or action:find("Take")) then
                 local parent = obj.Parent
-                local priceText = ""
-                local searchObj = parent
-                for i = 1, 5 do
-                    if searchObj then
-                        for _, child in ipairs(searchObj:GetChildren()) do
-                            if child:IsA("BillboardGui") then
-                                for _, gui in ipairs(child:GetChildren()) do
-                                    if gui:IsA("TextLabel") then priceText = gui.Text end
-                                end
-                            end
-                        end
-                        searchObj = searchObj.Parent
-                    end
-                end
+                local rawName = parent and parent.Name or "Item"
                 local position = findPosition(obj) or findPosition(parent)
                 local shopName = "Unknown"
                 for name in path:gmatch("Shop_ShopZone_%d+") do shopName = name; break end
@@ -418,15 +430,29 @@ local function findClothes()
                 end
                 local floor = "1 этаж"
                 if position and position.Y > 10 then floor = "2 этаж" end
+
+                local fair = getFairPrice(rawName)
+                local rarity = fair and rarityByPrice(fair) or nil
+                local price = fair
+
                 table.insert(clothes, {
-                    obj = obj, parent = parent,
-                    name = parent and parent.Name or "Item",
-                    priceText = priceText,
+                    obj = obj,
+                    parent = parent,
+                    name = rawName,
                     position = position,
-                    shop = shopName, floor = floor,
-                    taken = false, unavailable = false, failedAttempts = 0,
-                    rarity = nil, price = nil
+                    shop = shopName,
+                    floor = floor,
+                    taken = false,
+                    unavailable = false,
+                    failedAttempts = 0,
+                    rarity = rarity,
+                    price = price,
+                    slotRef = parent
                 })
+
+                if fair then
+                    log("   📦 " .. rawName .. " | " .. (RARITY_NAMES[rarity] or "?") .. " | $" .. fair)
+                end
             end
             if action:find("Поговорить") or action:find("поговорить") then
                 if not seller then
@@ -437,6 +463,7 @@ local function findClothes()
         end
     end
     log("✅ Найдено одежды: " .. #clothes)
+    log("   Из них с ценой из конфигов: " .. (table.maxn(NAME_INDEX) > 0 and "да" or "нет"))
 end
 
 -- ============================================
@@ -482,7 +509,8 @@ local function tryTakeItem(item)
                 log("   ❌ Prompt исчез"); item.unavailable = true; return false
             end
         end
-        if activatePrompt(item.obj) then
+        local activated = activatePrompt(item.obj)
+        if activated then
             log("   ✅ Взял!"); item.failedAttempts = 0; return true
         end
         log("   ❌ Попытка #" .. attempt .. " не удалась")
@@ -498,11 +526,11 @@ end
 -- ============================================
 local function pay()
     log("\n💳 ОПЛАТА...")
-    local ReplicatedStorage = game:GetService("ReplicatedStorage")
     local confirmPurchase = ReplicatedStorage:FindFirstChild("ShopRemotes", true)
     if confirmPurchase then confirmPurchase = confirmPurchase:FindFirstChild("ConfirmPurchase") end
     if confirmPurchase then
-        if pcall(function() confirmPurchase:FireServer() end) then log("   ✅ RemoteEvent"); return true end
+        local ok = pcall(function() confirmPurchase:FireServer() end)
+        if ok then log("   ✅ RemoteEvent"); return true end
     end
     if player:FindFirstChild("PlayerGui") then
         local shopGUI = player.PlayerGui:FindFirstChild("ShopGUI")
@@ -523,10 +551,10 @@ local function pay()
 end
 
 -- ============================================
--- GUI (полный интерфейс)
+-- GUI (полный интерфейс, как в v14.0)
 -- ============================================
 local screenGui = Instance.new("ScreenGui")
-screenGui.Name = "AutoBuy_v12_1"
+screenGui.Name = "AutoBuy_v15"
 screenGui.ResetOnSpawn = false
 screenGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
 screenGui.Parent = player:WaitForChild("PlayerGui")
@@ -550,7 +578,7 @@ local titleLabel = Instance.new("TextLabel")
 titleLabel.Size = UDim2.new(1, -45, 1, 0)
 titleLabel.Position = UDim2.new(0, 10, 0, 0)
 titleLabel.BackgroundTransparency = 1
-titleLabel.Text = " Автопокупка v12.1 | Универсальный поиск GUI"
+titleLabel.Text = " Автопокупка v15.0 | Идеальная ходьба"
 titleLabel.TextColor3 = Color3.new(1, 1, 1)
 titleLabel.Font = Enum.Font.GothamBold
 titleLabel.TextSize = 14
@@ -629,7 +657,7 @@ filterTitle.TextSize = 12
 filterTitle.TextXAlignment = Enum.TextXAlignment.Left
 filterTitle.Parent = filterFrame
 
--- Кнопки редкостей
+-- Кнопки редкостей (оставлены для галочки, но не влияют)
 local rarityButtons = {}
 local rarityOrder = {"common", "uncommon", "rare", "epic", "legendary"}
 
@@ -952,7 +980,7 @@ local function updateList()
         nameLabel.Size = UDim2.new(1, -15, 0, 20)
         nameLabel.Position = UDim2.new(0, 10, 0, 3)
         nameLabel.BackgroundTransparency = 1
-        nameLabel.Text = "📦 " .. item.name
+        nameLabel.Text = "📦 " .. (item.name or "??")
         nameLabel.TextColor3 = Color3.new(1, 1, 1)
         nameLabel.Font = Enum.Font.GothamBold
         nameLabel.TextSize = 12
@@ -986,7 +1014,7 @@ local function updateList()
 end
 
 -- ============================================
--- ПРОЦЕСС ОПЛАТЫ С ПЕРЕМЕЩЕНИЕМ
+-- ПРОЦЕСС ОПЛАТЫ
 -- ============================================
 local function goToPay()
     log("\n💰 === НАЧИНАЮ ОПЛАТУ ===")
@@ -1058,19 +1086,17 @@ local function goToPay()
 end
 
 -- ============================================
--- ОСНОВНОЙ ЦИКЛ (С ИСПОЛЬЗОВАНИЕМ GUI ДЛЯ ДАННЫХ)
+-- ОСНОВНОЙ ЦИКЛ (с Pathfinding и без фильтра редкости)
 -- ============================================
 local function mainLoop()
     log("\n🚀 ЗАПУСК ЦИКЛА!")
     
     while running do
-        -- Сброс счётчиков для нового цикла
+        -- Сброс счётчиков
         for _, item in ipairs(clothes) do 
             item.taken = false
             item.unavailable = false
             item.failedAttempts = 0
-            item.rarity = nil
-            item.price = nil
         end
         shopLimits = {}
         takenCount = 0
@@ -1091,10 +1117,8 @@ local function mainLoop()
             if not running then break end
             if item.taken or item.unavailable then continue end
             
-            -- Проверка лимита корзины
             syncCart()
             if takenCount >= SETTINGS.MAX_TOTAL then
-                log("\n КОРЗИНА ПОЛНА! (" .. takenCount .. ")")
                 shouldPay = true
                 break
             end
@@ -1102,7 +1126,6 @@ local function mainLoop()
             local shopCount = shopLimits[item.shop] or 0
             if shopCount >= SETTINGS.MAX_PER_SHOP then continue end
             
-            -- Задержка между взятиями
             local waitTime = SETTINGS.DELAY_ITEMS - (tick() - lastTakeTime)
             if waitTime > 0 then
                 local waitStart = tick()
@@ -1115,42 +1138,21 @@ local function mainLoop()
             
             if not running then break end
             
-            log("\n🎯 Цель: " .. item.name)
-            addLog("🚀 " .. item.name)
-            statusLabel.Text = "🚀 " .. item.name
+            -- Если цена уже известна (из конфигов), применяем фильтр сразу
+            if item.price then
+                if not shouldBuyItem(item) then
+                    addLog("⛔ " .. item.name .. " не подходит")
+                    updateList()
+                    continue
+                end
+            end
             
-            -- Идём к предмету
+            -- Идём к предмету (если ещё не на месте)
             if item.position then
                 walkTo(item.position)
                 task.wait(0.3)
             end
             
-            -- Ждём, пока появится GUI с информацией о предмете
-            log("   🔍 Сканирую данные (GUI)...")
-            local rarity, price = waitForItemData(SETTINGS.GUI_SCAN_TIMEOUT)
-            if not rarity or not price then
-                log("   ❌ Не удалось получить данные из GUI")
-                addLog("❌ " .. item.name .. " (нет данных)")
-                item.failedAttempts = item.failedAttempts + 1
-                if item.failedAttempts >= SETTINGS.MAX_FAILED_ATTEMPTS then
-                    item.unavailable = true
-                end
-                updateList()
-                continue
-            end
-            
-            item.rarity = rarity
-            item.price = price
-            log("   📋 " .. (RARITY_NAMES[rarity] or rarity) .. " | $" .. price)
-            
-            -- Проверка фильтров
-            if not shouldBuyItem(item) then
-                addLog("⛔ " .. item.name .. " не подходит")
-                updateList()
-                continue
-            end
-            
-            -- Берём предмет
             addLog("🤖 Беру...")
             statusLabel.Text = "🤖 Беру " .. item.name
             local success = tryTakeItem(item)
@@ -1159,7 +1161,7 @@ local function mainLoop()
                 takenCount = takenCount + 1
                 shopLimits[item.shop] = (shopLimits[item.shop] or 0) + 1
                 lastTakeTime = tick()
-                totalMoneySpent = totalMoneySpent + item.price
+                totalMoneySpent = totalMoneySpent + (item.price or 0)
                 
                 log("✅ Взял! [" .. takenCount .. "/" .. SETTINGS.MAX_TOTAL .. "]")
                 addLog("✅ " .. item.name .. " (" .. takenCount .. "/" .. SETTINGS.MAX_TOTAL .. ")")
@@ -1177,7 +1179,6 @@ local function mainLoop()
             task.wait(0.3)
         end
         
-        -- Оплата, если набрали предметов или корзина полна
         if shouldPay or takenCount > 0 then
             log("\n⚡ ПЕРЕХОД К ОПЛАТЕ! (взято: " .. takenCount .. ")")
             goToPay()
@@ -1189,7 +1190,6 @@ local function mainLoop()
             addLog("❌ Нечего брать")
         end
         
-        -- Ожидание обновления магазина
         log("\n⏳ Ожидание " .. SETTINGS.REFRESH_TIME .. " сек...")
         addLog("⏳ Жду " .. SETTINGS.REFRESH_TIME .. "с...")
         statusLabel.Text = "⏳ Ожидание..."
@@ -1238,7 +1238,8 @@ updateStats()
 updateList()
 
 print("\n" .. string.rep("=", 80))
-print("✅ Скрипт v12.1 загружен!")
-print("🔍 Универсальный поиск RarityText/PriceLabel/NameLabel по ВСЕМ ScreenGui")
-print("🚀 Суперходьба | 🎯 Фильтры | 🔄 2 попытки")
+print("✅ Скрипт v15.0 загружен!")
+print("🧭 Pathfinding – обходит стены, поднимается по лестницам")
+print("💰 Фильтр только по цене (редкость не учитывается)")
+print("🔄 2 попытки взять предмет")
 print(string.rep("=", 80) .. "\n")
