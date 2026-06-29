@@ -1,4 +1,4 @@
--- 👕 АВТОПОКУПКА v8.3 - ФИЛЬТРЫ ПО ЦЕНЕ И РЕДКОСТИ + ИСПРАВЛЕННАЯ ОПЛАТА
+-- 👕 АВТОПОКУПКА v8.4 - ИСПРАВЛЕННЫЕ ФИЛЬТРЫ
 -- GitHub: loadstring(game:HttpGet("https://raw.githubusercontent.com/l9jlevadim-svg/roblox-scripts/main/autobuy.lua"))()
 
 local Workspace = game:GetService("Workspace")
@@ -13,7 +13,7 @@ local humanoid = character:WaitForChild("Humanoid")
 local rootPart = character:WaitForChild("HumanoidRootPart")
 
 print("\n" .. string.rep("=", 60))
-print("👕 АВТОПОКУПКА v8.3 - ФИЛЬТРЫ + ОПЛАТА")
+print("👕 АВТОПОКУПКА v8.4 - ИСПРАВЛЕННЫЕ ФИЛЬТРЫ")
 print(string.rep("=", 60) .. "\n")
 
 -- ============================================
@@ -31,28 +31,26 @@ local SETTINGS = {
     RETRY_DELAY = 1,
     MAX_FAILED_ATTEMPTS = 2,
     STOP_DISTANCE = 4,
-    PROMPT_RANGE = 10,
     PATH_RADIUS = 2,
     PATH_HEIGHT = 5,
     CART_CHECK_DELAY = 0.5,
-    -- Фильтры
-    MAX_PRICE = 999999,  -- Максимальная цена (0 = без лимита)
-    RARITY_FILTER = {    -- Фильтр по редкости (true = покупать)
-        common = true,      -- Обычная (серая)
-        uncommon = true,    -- Необычная (зеленая)
-        rare = true,        -- Редкая (синяя)
-        epic = true,        -- Эпическая (фиолетовая)
-        legendary = true    -- Легендарная (желтая)
+    MAX_PRICE = 999999,
+    RARITY_FILTER = {
+        common = true,
+        uncommon = true,
+        rare = true,
+        epic = true,
+        legendary = true
     }
 }
 
--- Цвета редкостей
+-- Цвета редкостей (Roblox BrickColor)
 local RARITY_COLORS = {
-    common = Color3.fromRGB(150, 150, 150),    -- Серый
-    uncommon = Color3.fromRGB(50, 200, 50),    -- Зеленый
-    rare = Color3.fromRGB(50, 100, 255),       -- Синий
-    epic = Color3.fromRGB(180, 50, 255),       -- Фиолетовый
-    legendary = Color3.fromRGB(255, 200, 50)   -- Желтый
+    common = Color3.fromRGB(150, 150, 150),
+    uncommon = Color3.fromRGB(50, 200, 50),
+    rare = Color3.fromRGB(50, 100, 255),
+    epic = Color3.fromRGB(180, 50, 255),
+    legendary = Color3.fromRGB(255, 200, 50)
 }
 
 local RARITY_NAMES = {
@@ -61,6 +59,15 @@ local RARITY_NAMES = {
     rare = "Редкая",
     epic = "Эпическая",
     legendary = "Легендарная"
+}
+
+-- Ключевые слова для определения редкости
+local RARITY_KEYWORDS = {
+    legendary = {"легенд", "legendary", "legend", "лег", "leg"},
+    epic = {"эпич", "epic", "эп", "ep"},
+    rare = {"редк", "rare", "ред", "r"},
+    uncommon = {"необыч", "uncommon", "необы", "uc", "uncom"},
+    common = {"обычн", "common", "обыч", "обы", "c", "com"}
 }
 
 -- ============================================
@@ -104,123 +111,185 @@ local function log(message)
 end
 
 -- ============================================
---  ОПРЕДЕЛЕНИЕ РЕДКОСТИ
+--  ОПРЕДЕЛЕНИЕ РЕДКОСТИ (УЛУЧШЕННОЕ)
 -- ============================================
 
 local function detectRarity(item)
-    -- Метод 1: Ищем текст с названием редкости в BillboardGui
-    if item.parent then
-        local searchObj = item.parent
-        for i = 1, 5 do
-            if searchObj then
-                for _, child in ipairs(searchObj:GetChildren()) do
-                    if child:IsA("BillboardGui") then
-                        for _, gui in ipairs(child:GetChildren()) do
-                            if gui:IsA("TextLabel") then
-                                local text = gui.Text:lower()
-                                local color = gui.TextColor3
-                                
-                                -- Проверяем по тексту
-                                if text:find("обычн") or text:find("common") then
-                                    return "common"
-                                elseif text:find("необычн") or text:find("uncommon") then
-                                    return "uncommon"
-                                elseif text:find("редк") or text:find("rare") then
-                                    return "rare"
-                                elseif text:find("эпич") or text:find("epic") then
-                                    return "epic"
-                                elseif text:find("легенд") or text:find("legendary") then
-                                    return "legendary"
-                                end
-                                
-                                -- Проверяем по цвету текста
-                                if color then
-                                    for rarity, rarityColor in pairs(RARITY_COLORS) do
-                                        if math.abs(color.R - rarityColor.R) < 0.1 and
-                                           math.abs(color.G - rarityColor.G) < 0.1 and
-                                           math.abs(color.B - rarityColor.B) < 0.1 then
-                                            return rarity
-                                        end
-                                    end
-                                end
-                            end
-                        end
-                    end
-                end
-                searchObj = searchObj.Parent
-            end
-        end
-    end
+    if not item.parent then return "common" end
     
-    -- Метод 2: Проверяем цвет самого предмета
-    if item.parent and item.parent:IsA("BasePart") then
-        local partColor = item.parent.Color or item.parent.BrickColor and item.parent.BrickColor.Color
-        if partColor then
-            for rarity, rarityColor in pairs(RARITY_COLORS) do
-                if math.abs(partColor.R - rarityColor.R) < 0.15 and
-                   math.abs(partColor.G - rarityColor.G) < 0.15 and
-                   math.abs(partColor.B - rarityColor.B) < 0.15 then
+    -- Метод 1: Атрибуты Roblox (самый надёжный!)
+    local parent = item.parent
+    if parent:GetAttribute("Rarity") then
+        local attr = tostring(parent:GetAttribute("Rarity")):lower()
+        for rarity, keywords in pairs(RARITY_KEYWORDS) do
+            for _, kw in ipairs(keywords) do
+                if attr:find(kw) then
+                    log("   🎨 Редкость по атрибуту: " .. rarity)
                     return rarity
                 end
             end
         end
     end
     
-    -- По умолчанию - обычная
+    -- Метод 2: Value объекты внутри предмета
+    for _, child in ipairs(parent:GetDescendants()) do
+        if child:IsA("StringValue") or child:IsA("ObjectValue") then
+            local val = tostring(child.Value):lower()
+            for rarity, keywords in pairs(RARITY_KEYWORDS) do
+                for _, kw in ipairs(keywords) do
+                    if val:find(kw) then
+                        log("   🎨 Редкость по Value: " .. rarity)
+                        return rarity
+                    end
+                end
+            end
+        end
+    end
+    
+    -- Метод 3: Текст в BillboardGui
+    local searchObj = parent
+    for i = 1, 5 do
+        if searchObj then
+            for _, child in ipairs(searchObj:GetChildren()) do
+                if child:IsA("BillboardGui") then
+                    for _, gui in ipairs(child:GetChildren()) do
+                        if gui:IsA("TextLabel") then
+                            local text = gui.Text:lower()
+                            local color = gui.TextColor3
+                            
+                            -- По тексту
+                            for rarity, keywords in pairs(RARITY_KEYWORDS) do
+                                for _, kw in ipairs(keywords) do
+                                    if text:find(kw) then
+                                        log("   🎨 Редкость по тексту: " .. rarity .. " (текст: " .. gui.Text .. ")")
+                                        return rarity
+                                    end
+                                end
+                            end
+                            
+                            -- По цвету текста
+                            if color then
+                                for rarity, rarityColor in pairs(RARITY_COLORS) do
+                                    if math.abs(color.R - rarityColor.R) < 0.15 and
+                                       math.abs(color.G - rarityColor.G) < 0.15 and
+                                       math.abs(color.B - rarityColor.B) < 0.15 then
+                                        log("    Редкость по цвету текста: " .. rarity)
+                                        return rarity
+                                    end
+                                end
+                            end
+                        end
+                    end
+                end
+            end
+            searchObj = searchObj.Parent
+        end
+    end
+    
+    -- Метод 4: Цвет самого предмета
+    if parent:IsA("BasePart") then
+        local partColor = parent.Color
+        if partColor then
+            for rarity, rarityColor in pairs(RARITY_COLORS) do
+                if math.abs(partColor.R - rarityColor.R) < 0.2 and
+                   math.abs(partColor.G - rarityColor.G) < 0.2 and
+                   math.abs(partColor.B - rarityColor.B) < 0.2 then
+                    log("   🎨 Редкость по цвету предмета: " .. rarity)
+                    return rarity
+                end
+            end
+        end
+    end
+    
+    -- Метод 5: Имя предмета содержит редкость
+    local name = parent.Name:lower()
+    for rarity, keywords in pairs(RARITY_KEYWORDS) do
+        for _, kw in ipairs(keywords) do
+            if name:find(kw) then
+                log("    Редкость по имени: " .. rarity)
+                return rarity
+            end
+        end
+    end
+    
+    log("   🎨 Редкость не определена, ставлю common")
     return "common"
 end
 
 -- ============================================
--- 💰 ОПРЕДЕЛЕНИЕ ЦЕНЫ
+-- 💰 ОПРЕДЕЛЕНИЕ ЦЕНЫ (УЛУЧШЕННОЕ)
 -- ============================================
 
 local function detectPrice(item)
-    if item.priceText then
-        -- Ищем число в тексте цены (например "$100", "100$", "100")
-        local price = item.priceText:match("(%d+)")
+    -- Метод 1: Атрибут Price/Cost
+    if item.parent then
+        local price = item.parent:GetAttribute("Price") or item.parent:GetAttribute("Cost")
         if price then
-            return tonumber(price)
+            log("   💰 Цена по атрибуту: " .. tostring(price))
+            return tonumber(price) or 0
         end
     end
+    
+    -- Метод 2: Value объекты
+    if item.parent then
+        for _, child in ipairs(item.parent:GetDescendants()) do
+            if child:IsA("IntValue") or child:IsA("NumberValue") then
+                local name = child.Name:lower()
+                if name:find("price") or name:find("cost") or name:find("цен") then
+                    log("   💰 Цена по Value: " .. tostring(child.Value))
+                    return tonumber(child.Value) or 0
+                end
+            end
+        end
+    end
+    
+    -- Метод 3: Текст в BillboardGui
+    if item.priceText then
+        -- Ищем все числа в тексте
+        local numbers = {}
+        for num in item.priceText:gmatch("(%d+)") do
+            table.insert(numbers, tonumber(num))
+        end
+        
+        if #numbers > 0 then
+            -- Берём наибольшее число (обычно это цена)
+            local maxPrice = 0
+            for _, num in ipairs(numbers) do
+                if num > maxPrice then maxPrice = num end
+            end
+            log("   💰 Цена по тексту '" .. item.priceText .. "': " .. maxPrice)
+            return maxPrice
+        end
+    end
+    
+    log("   💰 Цена не найдена, ставлю 0")
     return 0
 end
 
 -- ============================================
--- 🎯 ФИЛЬТРАЦИЯ ПРЕДМЕТОВ
+-- 🎯 ФИЛЬТРАЦИЯ
 -- ============================================
 
-local function filterItems()
-    local filtered = {}
-    local skippedByRarity = 0
-    local skippedByPrice = 0
-    
-    for _, item in ipairs(clothes) do
-        -- Определяем редкость и цену
+local function shouldBuyItem(item)
+    -- Определяем редкость и цену если ещё не определены
+    if not item.rarity then
         item.rarity = detectRarity(item)
+    end
+    if not item.price then
         item.price = detectPrice(item)
-        
-        -- Проверяем фильтр по редкости
-        if not SETTINGS.RARITY_FILTER[item.rarity] then
-            skippedByRarity = skippedByRarity + 1
-            continue
-        end
-        
-        -- Проверяем фильтр по цене
-        if SETTINGS.MAX_PRICE > 0 and item.price > SETTINGS.MAX_PRICE then
-            skippedByPrice = skippedByPrice + 1
-            continue
-        end
-        
-        table.insert(filtered, item)
     end
     
-    log("🎯 Фильтрация:")
-    log("   Всего предметов: " .. #clothes)
-    log("   Пропущено по редкости: " .. skippedByRarity)
-    log("   Пропущено по цене: " .. skippedByPrice)
-    log("   Осталось: " .. #filtered)
+    -- Проверяем фильтр по редкости
+    if not SETTINGS.RARITY_FILTER[item.rarity] then
+        return false, "редкость " .. (RARITY_NAMES[item.rarity] or item.rarity)
+    end
     
-    return filtered
+    -- Проверяем фильтр по цене
+    if SETTINGS.MAX_PRICE > 0 and item.price > SETTINGS.MAX_PRICE then
+        return false, "цена $" .. item.price .. " > $" .. SETTINGS.MAX_PRICE
+    end
+    
+    return true
 end
 
 -- ============================================
@@ -279,7 +348,7 @@ local function walkTo(targetPos)
     local startPos = rootPart.Position
     local totalDistance = getDistance(startPos, targetPos)
     
-    log("🚶 Иду: " .. math.floor(totalDistance) .. " студий")
+    log(" Иду: " .. math.floor(totalDistance) .. " студий")
     
     local originalWalkSpeed = humanoid.WalkSpeed
     local originalJumpPower = humanoid.JumpPower
@@ -507,7 +576,9 @@ local function findClothes()
                     floor = floor,
                     taken = false,
                     unavailable = false,
-                    failedAttempts = 0
+                    failedAttempts = 0,
+                    rarity = nil,  -- Будет определено позже
+                    price = nil    -- Будет определено позже
                 })
             end
             
@@ -524,10 +595,21 @@ local function findClothes()
     end
     
     log("✅ Найдено одежды: " .. #clothes)
+    
+    -- 🎯 ОПРЕДЕЛЯЕМ РЕДКОСТЬ И ЦЕНУ ДЛЯ ВСЕХ ПРЕДМЕТОВ СРАЗУ
+    log("\n🎯 Определение редкости и цены...")
+    for i, item in ipairs(clothes) do
+        item.rarity = detectRarity(item)
+        item.price = detectPrice(item)
+        
+        if i <= 10 then  -- Логируем первые 10
+            log("   " .. i .. ". " .. item.name .. " | " .. (RARITY_NAMES[item.rarity] or item.rarity) .. " | $" .. item.price)
+        end
+    end
 end
 
 -- ============================================
--- ✅ АКТИВАЦИЯ (УПРОЩЁННАЯ - ВСЕГДА СЧИТАЕТ УСПЕХОМ)
+-- АКТИВАЦИЯ
 -- ============================================
 
 local function activatePrompt(prompt)
@@ -538,19 +620,16 @@ local function activatePrompt(prompt)
     
     log("   🔘 Активирую prompt...")
     
-    -- Метод 1: fireproximityprompt
     if fireproximityprompt then
         local ok = pcall(function() 
             fireproximityprompt(prompt) 
         end)
         if ok then 
-            log("   ✅ fireproximityprompt сработал")
-            return true  -- ✅ ВСЕГДА считаем успехом
+            log("   ✅ fireproximityprompt")
+            return true
         end
-        log("   ️ fireproximityprompt не сработал")
     end
     
-    -- Метод 2: InputHold
     local ok = pcall(function()
         prompt:InputHoldBegin()
         task.wait(1.5)
@@ -558,11 +637,11 @@ local function activatePrompt(prompt)
     end)
     
     if ok then
-        log("   ✅ InputHold сработал")
-        return true  -- ✅ ВСЕГДА считаем успехом
+        log("   ✅ InputHold")
+        return true
     end
     
-    log("   ❌ Оба метода не сработали")
+    log("   ❌ Не удалось")
     return false
 end
 
@@ -571,12 +650,12 @@ end
 -- ============================================
 
 local function tryTakeItem(item)
-    log("🎯 Пробую взять: " .. item.name .. " [" .. RARITY_NAMES[item.rarity] .. "] $" .. item.price)
+    log("🎯 Беру: " .. item.name .. " [" .. (RARITY_NAMES[item.rarity] or item.rarity) .. "] $" .. item.price)
     
     if item.unavailable then return false end
     
     if not item.obj or not item.obj.Parent then
-        log("   ❌ Prompt исчез")
+        log("    Prompt исчез")
         item.unavailable = true
         return false
     end
@@ -585,7 +664,7 @@ local function tryTakeItem(item)
         if not running then return false end
         
         if attempt > 1 then
-            log("   🔄 Попытка #" .. attempt .. " (жду " .. SETTINGS.RETRY_DELAY .. "с)...")
+            log("   🔄 Попытка #" .. attempt)
             task.wait(SETTINGS.RETRY_DELAY)
             
             if not item.obj or not item.obj.Parent then
@@ -598,7 +677,7 @@ local function tryTakeItem(item)
         local activated = activatePrompt(item.obj)
         
         if activated then
-            log("   ✅ Взял с попытки #" .. attempt .. "!")
+            log("   ✅ Взял!")
             item.failedAttempts = 0
             return true
         end
@@ -617,7 +696,7 @@ local function tryTakeItem(item)
 end
 
 -- ============================================
--- 💰 ОПЛАТА (ВСЕГДА ПЫТАЕТСЯ ОПЛАТИТЬ)
+-- ОПЛАТА
 -- ============================================
 
 local function pay()
@@ -665,7 +744,7 @@ end
 -- ============================================
 
 local screenGui = Instance.new("ScreenGui")
-screenGui.Name = "AutoBuy_v8_3"
+screenGui.Name = "AutoBuy_v8_4"
 screenGui.ResetOnSpawn = false
 screenGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
 screenGui.Parent = player:WaitForChild("PlayerGui")
@@ -689,7 +768,7 @@ local titleLabel = Instance.new("TextLabel")
 titleLabel.Size = UDim2.new(1, -45, 1, 0)
 titleLabel.Position = UDim2.new(0, 10, 0, 0)
 titleLabel.BackgroundTransparency = 1
-titleLabel.Text = "👕 Автопокупка v8.3 | Фильтры"
+titleLabel.Text = "👕 Автопокупка v8.4 | Фильтры"
 titleLabel.TextColor3 = Color3.new(1, 1, 1)
 titleLabel.Font = Enum.Font.GothamBold
 titleLabel.TextSize = 16
@@ -751,7 +830,7 @@ end)
 
 -- ФИЛЬТРЫ
 local filterFrame = Instance.new("Frame")
-filterFrame.Size = UDim2.new(1, -20, 0, 120)
+filterFrame.Size = UDim2.new(1, -20, 0, 130)
 filterFrame.Position = UDim2.new(0, 10, 0, 60)
 filterFrame.BackgroundColor3 = Color3.fromRGB(20, 20, 20)
 filterFrame.Parent = frame
@@ -761,7 +840,7 @@ local filterTitle = Instance.new("TextLabel")
 filterTitle.Size = UDim2.new(1, -10, 0, 20)
 filterTitle.Position = UDim2.new(0, 5, 0, 0)
 filterTitle.BackgroundTransparency = 1
-filterTitle.Text = "🎯 ФИЛЬТРЫ ПОКУПКИ"
+filterTitle.Text = "🎯 ФИЛЬТРЫ (кликни чтобы вкл/выкл)"
 filterTitle.TextColor3 = Color3.new(1, 1, 1)
 filterTitle.Font = Enum.Font.GothamBold
 filterTitle.TextSize = 12
@@ -769,35 +848,35 @@ filterTitle.TextXAlignment = Enum.TextXAlignment.Left
 filterTitle.Parent = filterFrame
 
 -- Чекбоксы редкостей
-local rarityCheckboxes = {}
-local rarityY = 25
+local rarityButtons = {}
+local rarityOrder = {"common", "uncommon", "rare", "epic", "legendary"}
 
-for rarity, name in pairs(RARITY_NAMES) do
-    local checkbox = Instance.new("TextButton")
-    checkbox.Size = UDim2.new(0.2, -5, 0, 20)
-    checkbox.Position = UDim2.new((rarityY - 25) / 95, 5, 0, rarityY)
-    checkbox.BackgroundColor3 = SETTINGS.RARITY_FILTER[rarity] and RARITY_COLORS[rarity] or Color3.fromRGB(50, 50, 50)
-    checkbox.Text = name
-    checkbox.TextColor3 = Color3.new(1, 1, 1)
-    checkbox.Font = Enum.Font.GothamBold
-    checkbox.TextSize = 10
-    checkbox.Parent = filterFrame
-    Instance.new("UICorner", checkbox).CornerRadius = UDim.new(0, 4)
+for idx, rarity in ipairs(rarityOrder) do
+    local btn = Instance.new("TextButton")
+    btn.Size = UDim2.new(0.19, -5, 0, 25)
+    btn.Position = UDim2.new((idx - 1) * 0.2, 5, 0, 25)
+    btn.BackgroundColor3 = SETTINGS.RARITY_FILTER[rarity] and RARITY_COLORS[rarity] or Color3.fromRGB(50, 50, 50)
+    btn.Text = RARITY_NAMES[rarity]
+    btn.TextColor3 = Color3.new(1, 1, 1)
+    btn.Font = Enum.Font.GothamBold
+    btn.TextSize = 10
+    btn.Parent = filterFrame
+    Instance.new("UICorner", btn).CornerRadius = UDim.new(0, 4)
     
-    checkbox.MouseButton1Click:Connect(function()
+    btn.MouseButton1Click:Connect(function()
         SETTINGS.RARITY_FILTER[rarity] = not SETTINGS.RARITY_FILTER[rarity]
-        checkbox.BackgroundColor3 = SETTINGS.RARITY_FILTER[rarity] and RARITY_COLORS[rarity] or Color3.fromRGB(50, 50, 50)
-        log(" Фильтр редкости " .. name .. ": " .. tostring(SETTINGS.RARITY_FILTER[rarity]))
+        btn.BackgroundColor3 = SETTINGS.RARITY_FILTER[rarity] and RARITY_COLORS[rarity] or Color3.fromRGB(50, 50, 50)
+        log(" Фильтр " .. RARITY_NAMES[rarity] .. ": " .. tostring(SETTINGS.RARITY_FILTER[rarity]))
+        updateList()
     end)
     
-    rarityCheckboxes[rarity] = checkbox
-    rarityY = rarityY + 22
+    rarityButtons[rarity] = btn
 end
 
--- Поле максимальной цены
+-- Цена
 local priceLabel = Instance.new("TextLabel")
-priceLabel.Size = UDim2.new(0.3, 0, 0, 20)
-priceLabel.Position = UDim2.new(0, 5, 0, 95)
+priceLabel.Size = UDim2.new(0.3, 0, 0, 25)
+priceLabel.Position = UDim2.new(0, 5, 0, 55)
 priceLabel.BackgroundTransparency = 1
 priceLabel.Text = "💰 Макс. цена:"
 priceLabel.TextColor3 = Color3.new(1, 1, 1)
@@ -807,8 +886,8 @@ priceLabel.TextXAlignment = Enum.TextXAlignment.Left
 priceLabel.Parent = filterFrame
 
 local priceInput = Instance.new("TextBox")
-priceInput.Size = UDim2.new(0.3, 0, 0, 20)
-priceInput.Position = UDim2.new(0.3, 5, 0, 95)
+priceInput.Size = UDim2.new(0.3, 0, 0, 25)
+priceInput.Position = UDim2.new(0.3, 5, 0, 55)
 priceInput.BackgroundColor3 = Color3.fromRGB(40, 40, 40)
 priceInput.TextColor3 = Color3.new(1, 1, 1)
 priceInput.Text = tostring(SETTINGS.MAX_PRICE)
@@ -821,14 +900,27 @@ priceInput.FocusLost:Connect(function()
     local newPrice = tonumber(priceInput.Text)
     if newPrice and newPrice >= 0 then
         SETTINGS.MAX_PRICE = newPrice
-        log("💰 Максимальная цена: " .. newPrice)
+        log("💰 Максимальная цена: $" .. newPrice)
+        updateList()
     end
 end)
+
+-- Статистика фильтров
+local filterStats = Instance.new("TextLabel")
+filterStats.Size = UDim2.new(1, -10, 0, 20)
+filterStats.Position = UDim2.new(0, 5, 0, 85)
+filterStats.BackgroundTransparency = 1
+filterStats.Text = "Всего: 0 | По фильтрам: 0"
+filterStats.TextColor3 = Color3.fromRGB(200, 200, 200)
+filterStats.Font = Enum.Font.Gotham
+filterStats.TextSize = 10
+filterStats.TextXAlignment = Enum.TextXAlignment.Left
+filterStats.Parent = filterFrame
 
 -- Статистика
 local statsFrame = Instance.new("Frame")
 statsFrame.Size = UDim2.new(1, -20, 0, 60)
-statsFrame.Position = UDim2.new(0, 10, 0, 185)
+statsFrame.Position = UDim2.new(0, 10, 0, 195)
 statsFrame.BackgroundColor3 = Color3.fromRGB(25, 25, 25)
 statsFrame.Parent = frame
 Instance.new("UICorner", statsFrame).CornerRadius = UDim.new(0, 8)
@@ -857,7 +949,7 @@ paidLabel.Parent = statsFrame
 
 local startBtn = Instance.new("TextButton")
 startBtn.Size = UDim2.new(1, -20, 0, 55)
-startBtn.Position = UDim2.new(0, 10, 0, 250)
+startBtn.Position = UDim2.new(0, 10, 0, 260)
 startBtn.BackgroundColor3 = Color3.fromRGB(80, 200, 80)
 startBtn.Text = "▶️ ЗАПУСТИТЬ АВТОПОКУПКУ"
 startBtn.TextColor3 = Color3.new(0, 0, 0)
@@ -868,7 +960,7 @@ Instance.new("UICorner", startBtn).CornerRadius = UDim.new(0, 10)
 
 local statusLabel = Instance.new("TextLabel")
 statusLabel.Size = UDim2.new(1, -20, 0, 30)
-statusLabel.Position = UDim2.new(0, 10, 0, 310)
+statusLabel.Position = UDim2.new(0, 10, 0, 320)
 statusLabel.BackgroundTransparency = 1
 statusLabel.Text = "🟢 Готов"
 statusLabel.TextColor3 = Color3.fromRGB(100, 255, 100)
@@ -879,7 +971,7 @@ statusLabel.Parent = frame
 
 local logLabel = Instance.new("TextLabel")
 logLabel.Size = UDim2.new(1, -20, 0, 90)
-logLabel.Position = UDim2.new(0, 10, 0, 345)
+logLabel.Position = UDim2.new(0, 10, 0, 355)
 logLabel.BackgroundTransparency = 1
 logLabel.Text = "📋 Лог:"
 logLabel.TextColor3 = Color3.fromRGB(180, 180, 180)
@@ -893,12 +985,12 @@ local logText = {}
 local function addLog(msg)
     table.insert(logText, msg)
     if #logText > 6 then table.remove(logText, 1) end
-    logLabel.Text = " Лог:\n" .. table.concat(logText, "\n")
+    logLabel.Text = "📋 Лог:\n" .. table.concat(logText, "\n")
 end
 
 local scrollFrame = Instance.new("ScrollingFrame")
-scrollFrame.Size = UDim2.new(1, -20, 1, -450)
-scrollFrame.Position = UDim2.new(0, 10, 0, 440)
+scrollFrame.Size = UDim2.new(1, -20, 1, -460)
+scrollFrame.Position = UDim2.new(0, 10, 0, 450)
 scrollFrame.BackgroundColor3 = Color3.fromRGB(20, 20, 20)
 scrollFrame.BorderSizePixel = 0
 scrollFrame.ScrollBarThickness = 6
@@ -914,17 +1006,31 @@ local function updateStats()
     paidLabel.Text = "💳 Оплачено: " .. paidCount
 end
 
+local function getFilteredItems()
+    local filtered = {}
+    for _, item in ipairs(clothes) do
+        local ok, reason = shouldBuyItem(item)
+        if ok and not item.taken and not item.unavailable then
+            table.insert(filtered, item)
+        end
+    end
+    return filtered
+end
+
 local function updateList()
     for _, child in ipairs(scrollFrame:GetChildren()) do
         if child:IsA("Frame") then child:Destroy() end
     end
     
-    local filtered = filterItems()
+    local filtered = getFilteredItems()
+    
+    -- Обновляем статистику фильтров
+    filterStats.Text = "Всего: " .. #clothes .. " | По фильтрам: " .. #filtered
     
     for i, item in ipairs(filtered) do
         local itemFrame = Instance.new("Frame")
         itemFrame.Size = UDim2.new(1, -10, 0, 60)
-        itemFrame.BackgroundColor3 = item.taken and Color3.fromRGB(40, 80, 40) or Color3.fromRGB(35, 35, 35)
+        itemFrame.BackgroundColor3 = Color3.fromRGB(35, 35, 35)
         itemFrame.LayoutOrder = i
         itemFrame.Parent = scrollFrame
         Instance.new("UICorner", itemFrame).CornerRadius = UDim.new(0, 8)
@@ -932,17 +1038,15 @@ local function updateList()
         -- Цветная полоска редкости
         local rarityBar = Instance.new("Frame")
         rarityBar.Size = UDim2.new(0, 4, 1, 0)
-        rarityBar.Position = UDim2.new(0, 0, 0, 0)
         rarityBar.BackgroundColor3 = RARITY_COLORS[item.rarity] or Color3.fromRGB(150, 150, 150)
         rarityBar.Parent = itemFrame
-        Instance.new("UICorner", rarityBar).CornerRadius = UDim.new(0, 8)
         
         local nameLabel = Instance.new("TextLabel")
         nameLabel.Size = UDim2.new(1, -15, 0, 20)
         nameLabel.Position = UDim2.new(0, 10, 0, 3)
         nameLabel.BackgroundTransparency = 1
-        nameLabel.Text = (item.taken and "✅ " or "📦 ") .. item.name
-        nameLabel.TextColor3 = item.taken and Color3.fromRGB(100, 255, 100) or Color3.new(1, 1, 1)
+        nameLabel.Text = "📦 " .. item.name
+        nameLabel.TextColor3 = Color3.new(1, 1, 1)
         nameLabel.Font = Enum.Font.GothamBold
         nameLabel.TextSize = 12
         nameLabel.TextXAlignment = Enum.TextXAlignment.Left
@@ -963,7 +1067,7 @@ local function updateList()
         rarityLabel.Size = UDim2.new(1, -15, 0, 18)
         rarityLabel.Position = UDim2.new(0, 10, 0, 41)
         rarityLabel.BackgroundTransparency = 1
-        rarityLabel.Text = RARITY_NAMES[item.rarity] or "Неизвестно"
+        rarityLabel.Text = RARITY_NAMES[item.rarity] or item.rarity
         rarityLabel.TextColor3 = RARITY_COLORS[item.rarity] or Color3.fromRGB(150, 150, 150)
         rarityLabel.Font = Enum.Font.GothamBold
         rarityLabel.TextSize = 10
@@ -975,19 +1079,26 @@ local function updateList()
 end
 
 local function resetAll()
-    for _, item in ipairs(clothes) do item.taken = false; item.unavailable = false; item.failedAttempts = 0 end
-    shopLimits = {}; takenCount = 0; lastTakeTime = 0; lastMoveTime = tick()
+    for _, item in ipairs(clothes) do 
+        item.taken = false
+        item.unavailable = false
+        item.failedAttempts = 0
+    end
+    shopLimits = {}
+    takenCount = 0
+    lastTakeTime = 0
+    lastMoveTime = tick()
     addLog("🔄 Сброс счетчиков")
     updateList()
 end
 
 -- ============================================
--- 💰 ОПЛАТА (ВСЕГДА ПЫТАЕТСЯ)
+-- ОПЛАТА
 -- ============================================
 
 local function goToPay()
     log("\n💰 === НАЧИНАЮ ОПЛАТУ ===")
-    addLog("💰 Иду к продавцу...")
+    addLog(" Иду к продавцу...")
     statusLabel.Text = "💰 Оплата..."
     statusLabel.TextColor3 = Color3.fromRGB(255, 200, 100)
     
@@ -1005,7 +1116,7 @@ local function goToPay()
         task.wait(1)
     end
     
-    log("💬 Разговор...")
+    log(" Разговор...")
     addLog("💬 Говорю...")
     statusLabel.Text = "💬 Разговор..."
     
@@ -1052,8 +1163,8 @@ local function mainLoop()
     while running do
         resetAll()
         
-        log("\n🎯 Фильтрация и сортировка...")
-        addLog("🎯 Фильтрация...")
+        log("\n🎯 Сортировка...")
+        addLog(" Сортировка...")
         sortByDistance()
         updateList()
         
@@ -1068,12 +1179,12 @@ local function mainLoop()
             if item.taken then continue end
             if item.unavailable then continue end
             
-            -- Проверяем фильтры
-            item.rarity = detectRarity(item)
-            item.price = detectPrice(item)
-            
-            if not SETTINGS.RARITY_FILTER[item.rarity] then continue end
-            if SETTINGS.MAX_PRICE > 0 and item.price > SETTINGS.MAX_PRICE then continue end
+            --  ПРОВЕРКА ФИЛЬТРОВ
+            local ok, reason = shouldBuyItem(item)
+            if not ok then
+                -- Пропускаем предмет
+                continue
+            end
             
             syncCart()
             
@@ -1098,7 +1209,7 @@ local function mainLoop()
             
             if not running then break end
             
-            log("\n🎯 Цель: " .. item.name .. " [" .. RARITY_NAMES[item.rarity] .. "] $" .. item.price)
+            log("\n Цель: " .. item.name .. " [" .. (RARITY_NAMES[item.rarity] or item.rarity) .. "] $" .. item.price)
             addLog("🚶 " .. item.name)
             statusLabel.Text = "🚶 " .. item.name
             
@@ -1108,7 +1219,7 @@ local function mainLoop()
             end
             
             addLog("🤖 Беру...")
-            statusLabel.Text = " Беру " .. item.name
+            statusLabel.Text = "🤖 Беру " .. item.name
             
             local success = tryTakeItem(item)
             
@@ -1127,7 +1238,7 @@ local function mainLoop()
                 
                 if takenCount >= SETTINGS.MAX_TOTAL then
                     log("\n🎯 ЛИМИТ! → ОПЛАТА!")
-                    addLog(" Лимит! Иду платить...")
+                    addLog("🎯 Лимит! Иду платить...")
                     shouldPay = true
                     break
                 end
@@ -1139,7 +1250,7 @@ local function mainLoop()
         end
         
         if shouldPay or takenCount > 0 then
-            log("\n ПЕРЕХОД К ОПЛАТЕ! (взято: " .. takenCount .. ")")
+            log("\n⚡ ПЕРЕХОД К ОПЛАТЕ! (взято: " .. takenCount .. ")")
             goToPay()
             
             if running then
@@ -1182,7 +1293,7 @@ startBtn.MouseButton1Click:Connect(function()
         startBtn.BackgroundColor3 = Color3.fromRGB(80, 200, 80)
     else
         running = true
-        startBtn.Text = "⏹️ ОСТАНОВИТЬ"
+        startBtn.Text = "️ ОСТАНОВИТЬ"
         startBtn.BackgroundColor3 = Color3.fromRGB(220, 50, 50)
         sortByDistance()
         updateList()
@@ -1197,14 +1308,11 @@ updateStats()
 updateList()
 
 print("\n" .. string.rep("=", 60))
-print("✅ Скрипт v8.3 загружен!")
-print(" ФИЛЬТРЫ ПО РЕДКОСТИ:")
-print("   ✅ Обычная (серая)")
-print("   ✅ Необычная (зеленая)")
-print("   ✅ Редкая (синяя)")
-print("   ✅ Эпическая (фиолетовая)")
-print("   ✅ Легендарная (желтая)")
-print("💰 ФИЛЬТР ПО ЦЕНЕ: $" .. SETTINGS.MAX_PRICE)
-print(" 3 попытки взять предмет")
-print("💰 Всегда пытается оплатить")
+print("✅ Скрипт v8.4 загружен!")
+print("🎨 ФИЛЬТРЫ ПО РЕДКОСТИ:")
+for rarity, name in pairs(RARITY_NAMES) do
+    print("   " .. (SETTINGS.RARITY_FILTER[rarity] and "✅" or "❌") .. " " .. name)
+end
+print(" МАКС. ЦЕНА: $" .. SETTINGS.MAX_PRICE)
+print(" Открой GUI чтобы изменить фильтры!")
 print(string.rep("=", 60) .. "\n")
