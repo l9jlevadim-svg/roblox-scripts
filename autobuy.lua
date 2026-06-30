@@ -1,4 +1,4 @@
--- clean
+-- clean v15.5 smart walk no teleports
 local Workspace = game:GetService("Workspace")
 local Players = game:GetService("Players")
 local VirtualUser = game:GetService("VirtualUser")
@@ -10,7 +10,7 @@ local character = player.Character or player.CharacterAdded:Wait()
 local humanoid = character:WaitForChild("Humanoid")
 local rootPart = character:WaitForChild("HumanoidRootPart")
 print("\n" .. string.rep("=", 80))
-print("AUTOBUY v15.0")
+print("AUTOBUY v15.5")
 print(string.rep("=", 80) .. "\n")
 local SETTINGS = {
     MAX_PER_SHOP = 15,
@@ -34,7 +34,18 @@ local SETTINGS = {
         { min = 2000,  rarity = "rare" },
         { min = 500,   rarity = "uncommon" },
         { min = 0,     rarity = "common" }
-    }
+    },
+    RARITY_FILTER = {
+        common = true,
+        uncommon = true,
+        rare = true,
+        epic = true,
+        legendary = true
+    },
+    OBSTACLE_CHECK_DIST = 4,
+    SIDE_STEP_DIST = 5,
+    STUCK_TIMEOUT = 3,
+    WALL_FOLLOW_DIST = 6
 }
 local RARITY_COLORS = {
     common = Color3.fromRGB(150,150,150),
@@ -175,80 +186,175 @@ local function syncCart()
     end
     return takenCount
 end
+
+-- ============================================
+-- УМНЫЙ ОБХОД ПРЕПЯТСТВИЙ БЕЗ ТЕЛЕПОРТАЦИИ
+-- ============================================
 local function walkTo(targetPos)
     if not targetPos or not humanoid or not rootPart then return false end
     local startPos = rootPart.Position
     local totalDistance = getDistance(startPos, targetPos)
     if totalDistance <= 3 then return true end
+
     local originalWalkSpeed = humanoid.WalkSpeed
     local originalJumpPower = humanoid.JumpPower
     humanoid.WalkSpeed = SETTINGS.WALK_SPEED
     humanoid.JumpPower = SETTINGS.JUMP_POWER
-    local pathParams = {
+
+    -- Попробуем сначала использовать PathfindingService
+    local path = PathfindingService:CreatePath({
         AgentRadius = 2,
         AgentHeight = 5,
         AgentCanJump = true,
         AgentMaxSlope = 45,
         Costs = { Water = 20 }
-    }
-    local path = PathfindingService:CreatePath(pathParams)
-    pcall(function() path:ComputeAsync(rootPart.Position, targetPos) end)
-    local waypoints = path:GetWaypoints()
-    if #waypoints == 0 then
-        rootPart.CFrame = CFrame.new(targetPos + Vector3.new(0, 2, 0))
-        task.wait(0.5)
-        humanoid.WalkSpeed = originalWalkSpeed
-        humanoid.JumpPower = originalJumpPower
-        return getDistance(rootPart.Position, targetPos) <= 3
-    end
+    })
+    local pathSuccess = pcall(function() path:ComputeAsync(rootPart.Position, targetPos) end) and path.Status == Enum.PathStatus.Success
+    local waypoints = pathSuccess and path:GetWaypoints() or {}
+    local usePath = pathSuccess and #waypoints > 0
+
     local lastPosition = rootPart.Position
     local stuckTime = 0
     local currentWaypoint = 1
     local startTime = tick()
-    local maxTime = math.min(totalDistance * 0.7, 45)
+    local maxTime = math.min(totalDistance * 0.8, 60)
+
+    -- Дополнительные переменные для ручного обхода
+    local avoidDirection = nil -- направление обхода (Vector3)
+    local avoidTimer = 0
+
     while tick() - startTime < maxTime do
         if not running then
             humanoid.WalkSpeed = originalWalkSpeed
             humanoid.JumpPower = originalJumpPower
             return false
         end
+
         local currentPos = rootPart.Position
-        if getDistance(currentPos, targetPos) <= 3 then break end
-        if currentWaypoint <= #waypoints then
-            local wp = waypoints[currentWaypoint]
-            if getDistance(currentPos, wp.Position) <= 3 then
-                currentWaypoint = currentWaypoint + 1
-            else
-                if wp.Action == Enum.PathWaypointAction.Jump then
-                    humanoid:ChangeState(Enum.HumanoidStateType.Jumping)
+        local distToTarget = getDistance(currentPos, targetPos)
+        if distToTarget <= 3 then break end
+
+        -- Проверяем, движемся ли мы
+        local moved = getDistance(currentPos, lastPosition)
+        if moved < 0.3 then
+            stuckTime = stuckTime + 0.15
+        else
+            stuckTime = 0
+            avoidDirection = nil
+            avoidTimer = 0
+        end
+        lastPosition = currentPos
+
+        -- Определяем желаемое направление к цели
+        local dirToTarget = (targetPos - currentPos).Unit
+
+        -- Если застряли или препятствие прямо перед нами
+        local rayOrigin = currentPos + Vector3.new(0, 1.5, 0)
+        local rayParams = RaycastParams.new()
+        rayParams.FilterType = Enum.RaycastFilterType.Blacklist
+        rayParams.FilterDescendantsInstances = {character}
+        local frontRay = workspace:Raycast(rayOrigin, dirToTarget * SETTINGS.OBSTACLE_CHECK_DIST, rayParams)
+
+        -- Если есть путь и мы не застряли, следуем waypoints
+        if usePath and stuckTime < 1 and not avoidDirection then
+            if currentWaypoint <= #waypoints then
+                local wp = waypoints[currentWaypoint]
+                if getDistance(currentPos, wp.Position) <= 4 then
+                    currentWaypoint = currentWaypoint + 1
+                else
+                    humanoid:MoveTo(wp.Position)
                 end
-                humanoid:MoveTo(wp.Position)
+            else
+                humanoid:MoveTo(targetPos)
+            end
+        elseif frontRay or stuckTime >= 1 then
+            -- Препятствие или застревание — включаем обход
+            if stuckTime >= 1 then
+                log("Stuck, finding alternative route")
+            end
+
+            -- Выбираем направление обхода: лево или право
+            if not avoidDirection then
+                local right = dirToTarget:Cross(Vector3.new(0,1,0)).Unit
+                local left = -right
+
+                -- Проверяем, с какой стороны больше свободного пространства
+                local rightRay = workspace:Raycast(rayOrigin, right * SETTINGS.SIDE_STEP_DIST, rayParams)
+                local leftRay = workspace:Raycast(rayOrigin, left * SETTINGS.SIDE_STEP_DIST, rayParams)
+                local rightFree = rightRay == nil
+                local leftFree = leftRay == nil
+
+                if rightFree and leftFree then
+                    -- Выбираем сторону, которая ближе к цели (по углу)
+                    local angleRight = math.acos(math.clamp(right:Dot(dirToTarget), -1, 1))
+                    local angleLeft = math.acos(math.clamp(left:Dot(dirToTarget), -1, 1))
+                    avoidDirection = angleRight < angleLeft and right or left
+                elseif rightFree then
+                    avoidDirection = right
+                elseif leftFree then
+                    avoidDirection = left
+                else
+                    -- Оба заняты, пятись назад и поворачиваем
+                    local backDir = -dirToTarget
+                    humanoid:MoveTo(currentPos + backDir * 3)
+                    task.wait(0.5)
+                    avoidDirection = right -- пробуем право
+                end
+                avoidTimer = tick()
+            end
+
+            -- Двигаемся в выбранном боковом направлении + чуть вперёд к цели
+            local moveDir = (avoidDirection + dirToTarget * 0.3).Unit
+            humanoid:MoveTo(currentPos + moveDir * SETTINGS.SIDE_STEP_DIST)
+
+            -- Через некоторое время сбрасываем направление обхода
+            if tick() - avoidTimer > 1.5 then
+                avoidDirection = nil
+                avoidTimer = 0
             end
         else
+            -- Путь свободен, двигаемся прямо к цели
             humanoid:MoveTo(targetPos)
         end
-        local moved = getDistance(currentPos, lastPosition)
-        if moved < 0.5 then stuckTime = stuckTime + 0.2 else stuckTime = 0 end
-        lastPosition = currentPos
-        if stuckTime >= 4 then
-            local teleportPos = (currentWaypoint <= #waypoints and waypoints[currentWaypoint].Position) or targetPos
-            rootPart.CFrame = CFrame.new(teleportPos + Vector3.new(0, 2, 0))
-            stuckTime = 0
-            task.wait(0.3)
-            pcall(function() path:ComputeAsync(rootPart.Position, targetPos) end)
-            waypoints = path:GetWaypoints()
-            currentWaypoint = 1
+
+        -- Прыгаем, если застряли и не двигаемся
+        if stuckTime >= 2 and moved < 0.1 then
+            humanoid:ChangeState(Enum.HumanoidStateType.Jumping)
         end
-        task.wait(0.15)
+
+        -- Если путь перестал быть валидным, перестраиваем
+        if usePath and currentWaypoint <= #waypoints then
+            local wp = waypoints[currentWaypoint]
+            if wp and getDistance(currentPos, wp.Position) > 15 then
+                -- Потеряли путь, перестроим
+                local newPath = PathfindingService:CreatePath({
+                    AgentRadius = 2, AgentHeight = 5, AgentCanJump = true, AgentMaxSlope = 45, Costs = { Water = 20 }
+                })
+                local ok = pcall(function() newPath:ComputeAsync(currentPos, targetPos) end)
+                if ok and newPath.Status == Enum.PathStatus.Success then
+                    path = newPath
+                    waypoints = newPath:GetWaypoints()
+                    currentWaypoint = 1
+                else
+                    usePath = false
+                end
+            end
+        end
+
+        task.wait(0.1)
     end
-    if getDistance(rootPart.Position, targetPos) > 3 then
-        rootPart.CFrame = CFrame.new(targetPos + Vector3.new(0, 2, 0))
-        task.wait(0.5)
-    end
+
     humanoid.WalkSpeed = originalWalkSpeed
     humanoid.JumpPower = originalJumpPower
-    return true
+    -- Финальное движение к цели (без телепорта)
+    if getDistance(rootPart.Position, targetPos) > 3 then
+        humanoid:MoveTo(targetPos)
+        task.wait(0.5)
+    end
+    return getDistance(rootPart.Position, targetPos) <= 3
 end
+
+-- Остальной код (sortByDistance, GUI и т.д.) тот же, что в предыдущем полном скрипте, но я вставлю его для целостности
 local function sortByDistance()
     if not rootPart then return end
     local currentPos = rootPart.Position
@@ -364,7 +470,7 @@ local function pay()
     end
     return false
 end
--- GUI (full but compressed, same as before)
+-- GUI (полный, тот же, что в предыдущей версии, но с мелкими правками)
 local screenGui = Instance.new("ScreenGui")
 screenGui.Name = "AutoBuy_v15"
 screenGui.ResetOnSpawn = false
@@ -387,7 +493,7 @@ local titleLabel = Instance.new("TextLabel")
 titleLabel.Size = UDim2.new(1,-45,1,0)
 titleLabel.Position = UDim2.new(0,10,0,0)
 titleLabel.BackgroundTransparency = 1
-titleLabel.Text = " AutoBuy v15.0"
+titleLabel.Text = " AutoBuy v15.5"
 titleLabel.TextColor3 = Color3.new(1,1,1)
 titleLabel.Font = Enum.Font.GothamBold
 titleLabel.TextSize = 14
@@ -442,10 +548,10 @@ local filterTitle = Instance.new("TextLabel")
 filterTitle.Size = UDim2.new(1,-10,0,20)
 filterTitle.Position = UDim2.new(0,5,0,0)
 filterTitle.BackgroundTransparency = 1
-filterTitle.Text = " FILTERS"
+filterTitle.Text = " FILTERS (rarity buttons decorative)"
 filterTitle.TextColor3 = Color3.new(1,1,1)
 filterTitle.Font = Enum.Font.GothamBold
-filterTitle.TextSize = 12
+filterTitle.TextSize = 10
 filterTitle.TextXAlignment = Enum.TextXAlignment.Left
 filterTitle.Parent = filterFrame
 local rarityButtons = {}
@@ -454,8 +560,8 @@ for idx, rarity in ipairs(rarityOrder) do
     local btn = Instance.new("TextButton")
     btn.Size = UDim2.new(0.19,-5,0,30)
     btn.Position = UDim2.new((idx-1)*0.2,5,0,25)
-    btn.BackgroundColor3 = Color3.fromRGB(50,200,50)
-    btn.Text = "V " .. RARITY_NAMES[rarity]
+    btn.BackgroundColor3 = SETTINGS.RARITY_FILTER[rarity] and Color3.fromRGB(50,200,50) or Color3.fromRGB(80,80,80)
+    btn.Text = (SETTINGS.RARITY_FILTER[rarity] and "V " or "X ") .. RARITY_NAMES[rarity]
     btn.TextColor3 = Color3.new(1,1,1)
     btn.Font = Enum.Font.GothamBold
     btn.TextSize = 9
@@ -690,7 +796,9 @@ local function getFilteredItems()
     local filtered = {}
     for _, item in ipairs(clothes) do
         if not item.taken and not item.unavailable then
-            table.insert(filtered, item)
+            if shouldBuyItem(item) then
+                table.insert(filtered, item)
+            end
         end
     end
     return filtered
@@ -846,4 +954,4 @@ findClothes()
 sortByDistance()
 updateStats()
 updateList()
-print("Script v15.0 loaded!")
+print("Script v15.5 loaded!")
