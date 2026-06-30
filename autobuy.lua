@@ -1,4 +1,4 @@
--- v16.0 GUI-powered price, cart sync, restock timer
+-- v16.4 GUI restock timer display
 local Workspace = game:GetService("Workspace")
 local Players = game:GetService("Players")
 local VirtualUser = game:GetService("VirtualUser")
@@ -10,7 +10,7 @@ local character = player.Character or player.CharacterAdded:Wait()
 local humanoid = character:WaitForChild("Humanoid")
 local rootPart = character:WaitForChild("HumanoidRootPart")
 print("\n" .. string.rep("=", 80))
-print("AUTOBUY v16.0")
+print("AUTOBUY v16.4")
 print(string.rep("=", 80) .. "\n")
 local SETTINGS = {
     MAX_PER_SHOP = 15,
@@ -30,11 +30,11 @@ local SETTINGS = {
     OBSTACLE_CHECK_DIST = 3.5,
     SIDE_STEP_DIST = 5,
     RARITY_BY_PRICE = {
-        { min = 10000, rarity = "legendary" },
-        { min = 5000,  rarity = "epic" },
-        { min = 2000,  rarity = "rare" },
-        { min = 500,   rarity = "uncommon" },
-        { min = 0,     rarity = "common" }
+        { min = 100000, rarity = "legendary" },
+        { min = 50000,  rarity = "epic" },
+        { min = 20000,  rarity = "rare" },
+        { min = 5000,   rarity = "uncommon" },
+        { min = 0,      rarity = "common" }
     }
 }
 local RARITY_COLORS = {
@@ -64,17 +64,53 @@ local totalItemsBought = 0
 local totalMoneySpent = 0
 local cycleCount = 0
 
--- GUI elements cache
-local timerLabel = nil
-local countLabel = nil
-
-local function log(msg)
-    print("[AutoBuy] " .. msg)
+-- safe require
+local function safeRequire(inst)
+    if not inst then return nil end
+    local ok, mod = pcall(require, inst)
+    return ok and mod or nil
 end
-local function formatNumber(num)
-    if num >= 1000000 then return string.format("%.1fM", num / 1000000)
-    elseif num >= 1000 then return string.format("%.1fK", num / 1000)
-    else return tostring(num) end
+local Configs = ReplicatedStorage:FindFirstChild("Configs")
+local ClothingConfig = safeRequire(ReplicatedStorage:FindFirstChild("ClothingConfig"))
+local AccessoryCfg = safeRequire(Configs and Configs:FindFirstChild("AccessoryConfig"))
+local NAME_INDEX = {}
+if ClothingConfig or AccessoryCfg then
+    local function addToIndex(name, fair)
+        if name and fair then
+            NAME_INDEX[tostring(name):lower()] = fair
+        end
+    end
+    if ClothingConfig and ClothingConfig.SHOP_ITEMS then
+        local function scan(node, depth)
+            if type(node) ~= "table" or depth > 6 then return end
+            if node.name and (node.fairPrice or node.value) then
+                addToIndex(node.name, node.fairPrice or node.value)
+                return
+            end
+            for _, c in pairs(node) do scan(c, depth + 1) end
+        end
+        scan(ClothingConfig.SHOP_ITEMS, 0)
+    end
+    if AccessoryCfg then
+        local function scanAcc(node, depth)
+            if type(node) ~= "table" or depth > 6 then return end
+            if node.name and (node.fairPrice or node.value) then
+                addToIndex(node.name, node.fairPrice or node.value)
+                return
+            end
+            for _, c in pairs(node) do scanAcc(c, depth + 1) end
+        end
+        scanAcc(AccessoryCfg, 0)
+    end
+end
+local function getFairPrice(name)
+    return NAME_INDEX[tostring(name or ""):lower()]
+end
+local function rarityByPrice(price)
+    for _, tier in ipairs(SETTINGS.RARITY_BY_PRICE) do
+        if price >= tier.min then return tier.rarity end
+    end
+    return "common"
 end
 local function findPosition(obj)
     local checkObj = obj
@@ -91,6 +127,14 @@ end
 local function getDistance(pos1, pos2)
     return (pos1 - pos2).Magnitude
 end
+local function log(msg)
+    print("[AutoBuy] " .. msg)
+end
+local function formatNumber(num)
+    if num >= 1000000 then return string.format("%.1fM", num / 1000000)
+    elseif num >= 1000 then return string.format("%.1fK", num / 1000)
+    else return tostring(num) end
+end
 local function shouldBuyItem(item)
     if not item.price then return false end
     if item.price < SETTINGS.MIN_PRICE or item.price > SETTINGS.MAX_PRICE then
@@ -105,89 +149,7 @@ local function shouldBuyItem(item)
     return true
 end
 
--- Поиск GUI-элементов
-local function findGuiElements()
-    local playerGui = player:FindFirstChild("PlayerGui")
-    if not playerGui then return end
-    for _, gui in ipairs(playerGui:GetChildren()) do
-        if gui:IsA("ScreenGui") then
-            for _, el in ipairs(gui:GetDescendants()) do
-                if el.Name == "TimerLabel" and (el:IsA("TextLabel") or el:IsA("TextBox")) then
-                    timerLabel = el
-                elseif el.Name == "Count" and (el:IsA("TextLabel") or el:IsA("TextBox")) then
-                    countLabel = el
-                end
-            end
-        end
-    end
-    if timerLabel then log("TimerLabel found") end
-    if countLabel then log("Count label found") end
-end
-
--- Чтение оставшегося времени рестока (секунды)
-local function parseRestockTime()
-    if not timerLabel then return nil end
-    local text = timerLabel.Text
-    local min, sec = text:match("(%d+):(%d+)")
-    if min and sec then
-        return tonumber(min)*60 + tonumber(sec)
-    end
-    return nil
-end
-
--- Ожидание открытия магазина (когда таймер показывает 10 мин или около того)
-local function waitForShopOpen()
-    log("Waiting for shop to open...")
-    while running do
-        local remaining = parseRestockTime()
-        if remaining and remaining >= 590 then  -- 9:50 или больше
-            log("Shop is open (timer: " .. remaining .. "s)")
-            return
-        end
-        task.wait(1)
-    end
-end
-
--- Синхронизация корзины через Count
-local function syncCartCount()
-    if not countLabel then return end
-    local text = countLabel.Text
-    local current, max = text:match("(%d+)/(%d+)")
-    if current then
-        takenCount = tonumber(current)
-        SETTINGS.MAX_TOTAL = tonumber(max) or 15
-    end
-end
-
--- Получение цены из GUI (по названию предмета)
-local function getItemPriceFromGUI(itemName)
-    local playerGui = player:FindFirstChild("PlayerGui")
-    if not playerGui then return nil end
-    local labels = {}
-    for _, gui in ipairs(playerGui:GetChildren()) do
-        if gui:IsA("ScreenGui") then
-            for _, el in ipairs(gui:GetDescendants()) do
-                if (el:IsA("TextLabel") or el:IsA("TextBox")) and el.Text ~= "" then
-                    table.insert(labels, el)
-                end
-            end
-        end
-    end
-    for i, label in ipairs(labels) do
-        if label.Text:lower():find(itemName:lower(), 1, true) then
-            for j = i, math.min(i+3, #labels) do
-                local txt = labels[j].Text
-                local num = txt:match("(%d+)%s*R%$")
-                if num then
-                    return tonumber(num)
-                end
-            end
-        end
-    end
-    return nil
-end
-
--- Поиск продавца
+-- Find seller
 local function findSeller()
     if seller then return seller end
     for _, obj in ipairs(Workspace:GetDescendants()) do
@@ -203,7 +165,7 @@ local function findSeller()
     return nil
 end
 
--- Умный обход
+-- Smart walk (no teleport)
 local function walkTo(targetPos)
     if not targetPos or not humanoid or not rootPart then return false end
     local startPos = rootPart.Position
@@ -259,7 +221,6 @@ local function walkTo(targetPos)
         rayParams.FilterType = Enum.RaycastFilterType.Blacklist
         rayParams.FilterDescendantsInstances = {character}
 
-        -- Проверка препятствий на высоте 2.5-4.5
         local lowCheck = currentPos + Vector3.new(0, 2.5, 0)
         local highCheck = currentPos + Vector3.new(0, 4.5, 0)
         local lowRay = workspace:Raycast(lowCheck, dirToTarget * SETTINGS.OBSTACLE_CHECK_DIST, rayParams)
@@ -378,12 +339,14 @@ local function findClothes()
                 end
                 local floor = "1st floor"
                 if position and position.Y > 10 then floor = "2nd floor" end
-                -- Цену пока не знаем, получим через GUI при подходе
+                local fair = getFairPrice(rawName)
+                local price = fair
+                local rarity = fair and rarityByPrice(fair) or nil
                 table.insert(clothes, {
                     obj = obj, parent = parent, name = rawName,
                     position = position, shop = shopName, floor = floor,
                     taken = false, unavailable = false, failedAttempts = 0,
-                    rarity = nil, price = nil, slotRef = parent
+                    rarity = rarity, price = price, slotRef = parent
                 })
             end
         end
@@ -413,11 +376,9 @@ local function tryTakeItem(item)
             if not item.obj or not item.obj.Parent then item.unavailable = true; return false end
         end
         if activatePrompt(item.obj) then
-            -- После успешного взятия синхронизируем корзину
-            syncCartCount()
             return true
         end
-        log("Attempt " .. attempt .. " failed")
+        log("Attempt " .. attempt .. " failed for " .. item.name)
     end
     item.failedAttempts = item.failedAttempts + 1
     if item.failedAttempts >= SETTINGS.MAX_FAILED_ATTEMPTS then item.unavailable = true end
@@ -471,14 +432,15 @@ local function goToPay()
         end
     end
 end
--- GUI
+
+-- GUI with restock timer
 local screenGui = Instance.new("ScreenGui")
 screenGui.Name = "AutoBuy_v16"
 screenGui.ResetOnSpawn = false
 screenGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
 screenGui.Parent = player:WaitForChild("PlayerGui")
 local frame = Instance.new("Frame")
-frame.Size = UDim2.new(0, 750, 0, 850)
+frame.Size = UDim2.new(0, 750, 0, 880)  -- немного выше для таймера
 frame.Position = UDim2.new(0, 100, 0, 100)
 frame.BackgroundColor3 = Color3.fromRGB(10,10,10)
 frame.BorderSizePixel = 0
@@ -494,7 +456,7 @@ local titleLabel = Instance.new("TextLabel")
 titleLabel.Size = UDim2.new(1,-45,1,0)
 titleLabel.Position = UDim2.new(0,10,0,0)
 titleLabel.BackgroundTransparency = 1
-titleLabel.Text = " AutoBuy v16.0 | GUI sync"
+titleLabel.Text = " AutoBuy v16.4 | Timer"
 titleLabel.TextColor3 = Color3.new(1,1,1)
 titleLabel.Font = Enum.Font.GothamBold
 titleLabel.TextSize = 14
@@ -539,12 +501,27 @@ end)
 UIS.InputChanged:Connect(function(input)
     if input == dragInput then updateDrag(input) end
 end)
+
+-- Restock timer label (добавлен)
+local restockLabel = Instance.new("TextLabel")
+restockLabel.Size = UDim2.new(1,-20,0,30)
+restockLabel.Position = UDim2.new(0,10,0,55) -- под заголовком
+restockLabel.BackgroundColor3 = Color3.fromRGB(20,20,20)
+restockLabel.TextColor3 = Color3.fromRGB(255,255,100)
+restockLabel.Font = Enum.Font.GothamBold
+restockLabel.TextSize = 16
+restockLabel.Text = "🔄 Restock: --:--"
+restockLabel.TextXAlignment = Enum.TextXAlignment.Center
+restockLabel.Parent = frame
+Instance.new("UICorner", restockLabel).CornerRadius = UDim.new(0,8)
+
 local filterFrame = Instance.new("Frame")
 filterFrame.Size = UDim2.new(1,-20,0,90)
-filterFrame.Position = UDim2.new(0,10,0,60)
+filterFrame.Position = UDim2.new(0,10,0,90)  -- сместили вниз
 filterFrame.BackgroundColor3 = Color3.fromRGB(20,20,20)
 filterFrame.Parent = frame
 Instance.new("UICorner", filterFrame).CornerRadius = UDim.new(0,8)
+
 local filterTitle = Instance.new("TextLabel")
 filterTitle.Size = UDim2.new(1,-10,0,20)
 filterTitle.Position = UDim2.new(0,5,0,0)
@@ -555,6 +532,7 @@ filterTitle.Font = Enum.Font.GothamBold
 filterTitle.TextSize = 11
 filterTitle.TextXAlignment = Enum.TextXAlignment.Left
 filterTitle.Parent = filterFrame
+
 local priceMinLabel = Instance.new("TextLabel")
 priceMinLabel.Size = UDim2.new(0.15,0,0,25)
 priceMinLabel.Position = UDim2.new(0,5,0,25)
@@ -651,9 +629,10 @@ Instance.new("UICorner", shopInput).CornerRadius = UDim.new(0,4)
 shopInput.FocusLost:Connect(function()
     SETTINGS.SHOP_FILTER = shopInput.Text updateList()
 end)
+
 local filterStats = Instance.new("TextLabel")
 filterStats.Size = UDim2.new(1,-10,0,20)
-filterStats.Position = UDim2.new(0,10,0,155)
+filterStats.Position = UDim2.new(0,10,0,185)
 filterStats.BackgroundTransparency = 1
 filterStats.Text = "Total: 0 | Filtered: 0"
 filterStats.TextColor3 = Color3.fromRGB(200,200,200)
@@ -661,12 +640,14 @@ filterStats.Font = Enum.Font.Gotham
 filterStats.TextSize = 10
 filterStats.TextXAlignment = Enum.TextXAlignment.Left
 filterStats.Parent = frame
+
 local statsFrame = Instance.new("Frame")
 statsFrame.Size = UDim2.new(1,-20,0,80)
-statsFrame.Position = UDim2.new(0,10,0,180)
+statsFrame.Position = UDim2.new(0,10,0,210)
 statsFrame.BackgroundColor3 = Color3.fromRGB(25,25,25)
 statsFrame.Parent = frame
 Instance.new("UICorner", statsFrame).CornerRadius = UDim.new(0,8)
+
 local takenLabel = Instance.new("TextLabel")
 takenLabel.Size = UDim2.new(0.33,-5,0.5,0)
 takenLabel.Position = UDim2.new(0,5,0,0)
@@ -719,7 +700,7 @@ moneyLabel.TextXAlignment = Enum.TextXAlignment.Left
 moneyLabel.Parent = statsFrame
 local startBtn = Instance.new("TextButton")
 startBtn.Size = UDim2.new(1,-20,0,55)
-startBtn.Position = UDim2.new(0,10,0,270)
+startBtn.Position = UDim2.new(0,10,0,300)
 startBtn.BackgroundColor3 = Color3.fromRGB(80,200,80)
 startBtn.Text = "START"
 startBtn.TextColor3 = Color3.new(0,0,0)
@@ -729,7 +710,7 @@ startBtn.Parent = frame
 Instance.new("UICorner", startBtn).CornerRadius = UDim.new(0,10)
 local statusLabel = Instance.new("TextLabel")
 statusLabel.Size = UDim2.new(1,-20,0,30)
-statusLabel.Position = UDim2.new(0,10,0,330)
+statusLabel.Position = UDim2.new(0,10,0,360)
 statusLabel.BackgroundTransparency = 1
 statusLabel.Text = "Ready"
 statusLabel.TextColor3 = Color3.fromRGB(100,255,100)
@@ -739,7 +720,7 @@ statusLabel.TextXAlignment = Enum.TextXAlignment.Left
 statusLabel.Parent = frame
 local logLabel = Instance.new("TextLabel")
 logLabel.Size = UDim2.new(1,-20,0,100)
-logLabel.Position = UDim2.new(0,10,0,365)
+logLabel.Position = UDim2.new(0,10,0,395)
 logLabel.BackgroundTransparency = 1
 logLabel.Text = " Log:"
 logLabel.TextColor3 = Color3.fromRGB(180,180,180)
@@ -755,8 +736,8 @@ local function addLog(msg)
     logLabel.Text = "Log:\n" .. table.concat(logText, "\n")
 end
 local scrollFrame = Instance.new("ScrollingFrame")
-scrollFrame.Size = UDim2.new(1,-20,1,-475)
-scrollFrame.Position = UDim2.new(0,10,0,470)
+scrollFrame.Size = UDim2.new(1,-20,1,-505)
+scrollFrame.Position = UDim2.new(0,10,0,500)
 scrollFrame.BackgroundColor3 = Color3.fromRGB(20,20,20)
 scrollFrame.BorderSizePixel = 0
 scrollFrame.ScrollBarThickness = 6
@@ -765,6 +746,35 @@ Instance.new("UICorner", scrollFrame).CornerRadius = UDim.new(0,8)
 local listLayout = Instance.new("UIListLayout")
 listLayout.Padding = UDim.new(0,4)
 listLayout.Parent = scrollFrame
+
+-- Обновление таймера из GUI
+local function updateRestockDisplay()
+    local text = "🔄 Restock: "
+    local playerGui = player:FindFirstChild("PlayerGui")
+    if playerGui then
+        for _, gui in ipairs(playerGui:GetChildren()) do
+            if gui:IsA("ScreenGui") then
+                for _, el in ipairs(gui:GetDescendants()) do
+                    if el.Name == "TimerLabel" then
+                        text = "🔄 " .. el.Text
+                        break
+                    end
+                end
+            end
+        end
+    end
+    if text == "🔄 Restock: " then text = "🔄 Restock: --:--" end
+    restockLabel.Text = text
+end
+
+-- Фоновое обновление таймера
+local function restockTimerUpdater()
+    while running do
+        updateRestockDisplay()
+        task.wait(1)
+    end
+end
+
 local function updateStats()
     takenLabel.Text = "Taken: " .. takenCount .. "/" .. SETTINGS.MAX_TOTAL
     paidLabel.Text = "Paid: " .. paidCount
@@ -834,9 +844,39 @@ local function updateList()
     scrollFrame.CanvasSize = UDim2.new(0,0,0, listLayout.AbsoluteContentSize.Y + 10)
 end
 
-local function mainLoop()
+-- Main loop with TimerLabel sync (unchanged, but added restockTimerUpdater)
+local function waitForRestock()
+    log("Waiting for shop restock...")
     while running do
-        -- Сброс
+        local playerGui = player:FindFirstChild("PlayerGui")
+        if playerGui then
+            for _, gui in ipairs(playerGui:GetChildren()) do
+                if gui:IsA("ScreenGui") then
+                    for _, el in ipairs(gui:GetDescendants()) do
+                        if el.Name == "TimerLabel" then
+                            local min, sec = el.Text:match("(%d+):(%d+)")
+                            if min and sec then
+                                local remaining = tonumber(min)*60 + tonumber(sec)
+                                if remaining >= 590 then
+                                    log("Shop is open (timer: " .. remaining .. "s)")
+                                    return
+                                end
+                            end
+                        end
+                    end
+                end
+            end
+        end
+        doQuickMove()
+        task.wait(1)
+    end
+end
+
+local function mainLoop()
+    -- Запускаем фоновый поток обновления таймера
+    task.spawn(function() restockTimerUpdater() end)
+
+    while running do
         for _, item in ipairs(clothes) do item.taken = false item.unavailable = false item.failedAttempts = 0 end
         shopLimits = {}
         takenCount = 0
@@ -848,33 +888,19 @@ local function mainLoop()
         for _, item in ipairs(clothes) do
             if not running then break end
             if item.taken or item.unavailable then continue end
-            syncCartCount()
             if takenCount >= SETTINGS.MAX_TOTAL then shouldPay = true break end
             local shopCount = shopLimits[item.shop] or 0
             if shopCount >= SETTINGS.MAX_PER_SHOP then continue end
 
-            -- Подходим к предмету, получаем цену из GUI
-            if item.position then
-                walkTo(item.position)
-                task.wait(0.3)
+            if item.price and not shouldBuyItem(item) then
+                updateList()
+                continue
             end
-            -- Попытка прочитать цену из GUI (до 2 секунд)
-            local price = nil
-            local start = tick()
-            while not price and tick() - start < 2 do
-                price = getItemPriceFromGUI(item.name)
-                if not price then task.wait(0.2) end
-            end
-            if price then
-                item.price = price
-                item.rarity = rarityByPrice(price)
-                -- Проверка фильтра
-                if not shouldBuyItem(item) then
-                    updateList()
-                    continue
-                end
-            else
-                log("Could not read price for " .. item.name)
+
+            if item.position then walkTo(item.position) task.wait(0.3) end
+
+            if not item.price then
+                log("No price for " .. item.name)
                 item.unavailable = true
                 updateList()
                 continue
@@ -885,10 +911,9 @@ local function mainLoop()
                 item.taken = true
                 takenCount = takenCount + 1
                 shopLimits[item.shop] = (shopLimits[item.shop] or 0) + 1
-                totalMoneySpent = totalMoneySpent + item.price
+                totalMoneySpent = totalMoneySpent + (item.price or 0)
                 updateStats()
                 updateList()
-                syncCartCount()
                 if takenCount >= SETTINGS.MAX_TOTAL then shouldPay = true break end
                 addLog("Success! Waiting " .. SETTINGS.SUCCESS_DELAY .. "s")
                 local waitStart = tick()
@@ -912,9 +937,7 @@ local function mainLoop()
             goToPay()
             if running then sortByDistance() updateList() end
         end
-        -- Ожидание рестока
-        waitForShopOpen()
-        -- Перезагрузка ассортимента
+        waitForRestock()
         findClothes()
     end
 end
@@ -928,7 +951,6 @@ startBtn.MouseButton1Click:Connect(function()
         running = true
         startBtn.Text = "STOP"
         startBtn.BackgroundColor3 = Color3.fromRGB(220,50,50)
-        findGuiElements()
         findShops()
         findClothes()
         sortByDistance()
@@ -937,4 +959,10 @@ startBtn.MouseButton1Click:Connect(function()
         task.spawn(mainLoop)
     end
 end)
-print("Script v16.0 loaded!")
+findShops()
+findClothes()
+sortByDistance()
+updateStats()
+updateList()
+updateRestockDisplay()
+print("Script v16.4 loaded!")
