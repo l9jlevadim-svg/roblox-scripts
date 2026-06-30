@@ -1,6 +1,4 @@
--- v15.0 autobuy
--- Pathfinding + price filter
--- ============================================
+-- v15.0 clean
 local Workspace = game:GetService("Workspace")
 local Players = game:GetService("Players")
 local VirtualUser = game:GetService("VirtualUser")
@@ -130,7 +128,7 @@ if ClothingConfig or AccessoryCfg then
         end
         scanAcc(AccessoryCfg, 0)
     end
-    log("Loaded price index: " .. table.maxn(NAME_INDEX) .. " items")
+    log("📚 Loaded price index: " .. table.maxn(NAME_INDEX) .. " items")
 else
     log("⚠️ No configs found, will use SlotPriceReveal as fallback")
 end
