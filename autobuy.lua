@@ -1,4 +1,4 @@
--- clean v15.5 smart walk no teleports
+-- clean v15.8 avoid head-level obstacles
 local Workspace = game:GetService("Workspace")
 local Players = game:GetService("Players")
 local VirtualUser = game:GetService("VirtualUser")
@@ -10,14 +10,15 @@ local character = player.Character or player.CharacterAdded:Wait()
 local humanoid = character:WaitForChild("Humanoid")
 local rootPart = character:WaitForChild("HumanoidRootPart")
 print("\n" .. string.rep("=", 80))
-print("AUTOBUY v15.5")
+print("AUTOBUY v15.8")
 print(string.rep("=", 80) .. "\n")
 local SETTINGS = {
     MAX_PER_SHOP = 15,
     MAX_TOTAL = 15,
-    DELAY_ITEMS = 2,
     REFRESH_TIME = 600,
     RETRY_DELAY = 1,
+    SUCCESS_DELAY = 4,
+    FAIL_DELAY = 1,
     MOVE_INTERVAL = 2,
     WALK_SPEED = 18,
     JUMP_POWER = 50,
@@ -28,24 +29,16 @@ local SETTINGS = {
     MAX_PRICE = 999999,
     NAME_FILTER = "",
     SHOP_FILTER = "",
+    OBSTACLE_CHECK_DIST = 3,    -- уменьшили, чтобы раньше реагировать на вешалки
+    SIDE_STEP_DIST = 5,
+    STUCK_TIMEOUT = 3,
     RARITY_BY_PRICE = {
         { min = 10000, rarity = "legendary" },
         { min = 5000,  rarity = "epic" },
         { min = 2000,  rarity = "rare" },
         { min = 500,   rarity = "uncommon" },
         { min = 0,     rarity = "common" }
-    },
-    RARITY_FILTER = {
-        common = true,
-        uncommon = true,
-        rare = true,
-        epic = true,
-        legendary = true
-    },
-    OBSTACLE_CHECK_DIST = 4,
-    SIDE_STEP_DIST = 5,
-    STUCK_TIMEOUT = 3,
-    WALL_FOLLOW_DIST = 6
+    }
 }
 local RARITY_COLORS = {
     common = Color3.fromRGB(150,150,150),
@@ -188,7 +181,7 @@ local function syncCart()
 end
 
 -- ============================================
--- УМНЫЙ ОБХОД ПРЕПЯТСТВИЙ БЕЗ ТЕЛЕПОРТАЦИИ
+-- УМНЫЙ ОБХОД ПРЕПЯТСТВИЙ (с учётом вешалок на уровне головы)
 -- ============================================
 local function walkTo(targetPos)
     if not targetPos or not humanoid or not rootPart then return false end
@@ -201,7 +194,6 @@ local function walkTo(targetPos)
     humanoid.WalkSpeed = SETTINGS.WALK_SPEED
     humanoid.JumpPower = SETTINGS.JUMP_POWER
 
-    -- Попробуем сначала использовать PathfindingService
     local path = PathfindingService:CreatePath({
         AgentRadius = 2,
         AgentHeight = 5,
@@ -219,8 +211,7 @@ local function walkTo(targetPos)
     local startTime = tick()
     local maxTime = math.min(totalDistance * 0.8, 60)
 
-    -- Дополнительные переменные для ручного обхода
-    local avoidDirection = nil -- направление обхода (Vector3)
+    local avoidDirection = nil
     local avoidTimer = 0
 
     while tick() - startTime < maxTime do
@@ -234,7 +225,6 @@ local function walkTo(targetPos)
         local distToTarget = getDistance(currentPos, targetPos)
         if distToTarget <= 3 then break end
 
-        -- Проверяем, движемся ли мы
         local moved = getDistance(currentPos, lastPosition)
         if moved < 0.3 then
             stuckTime = stuckTime + 0.15
@@ -245,17 +235,19 @@ local function walkTo(targetPos)
         end
         lastPosition = currentPos
 
-        -- Определяем желаемое направление к цели
         local dirToTarget = (targetPos - currentPos).Unit
-
-        -- Если застряли или препятствие прямо перед нами
-        local rayOrigin = currentPos + Vector3.new(0, 1.5, 0)
         local rayParams = RaycastParams.new()
         rayParams.FilterType = Enum.RaycastFilterType.Blacklist
         rayParams.FilterDescendantsInstances = {character}
-        local frontRay = workspace:Raycast(rayOrigin, dirToTarget * SETTINGS.OBSTACLE_CHECK_DIST, rayParams)
 
-        -- Если есть путь и мы не застряли, следуем waypoints
+        -- Лучи на двух уровнях: грудь и голова
+        local lowRayOrigin = currentPos + Vector3.new(0, 1.5, 0)
+        local highRayOrigin = currentPos + Vector3.new(0, 2.5, 0)
+        local frontLowRay = workspace:Raycast(lowRayOrigin, dirToTarget * SETTINGS.OBSTACLE_CHECK_DIST, rayParams)
+        local frontHighRay = workspace:Raycast(highRayOrigin, dirToTarget * SETTINGS.OBSTACLE_CHECK_DIST, rayParams)
+        local blockedLow = frontLowRay ~= nil
+        local blockedHigh = frontHighRay ~= nil
+
         if usePath and stuckTime < 1 and not avoidDirection then
             if currentWaypoint <= #waypoints then
                 local wp = waypoints[currentWaypoint]
@@ -267,25 +259,25 @@ local function walkTo(targetPos)
             else
                 humanoid:MoveTo(targetPos)
             end
-        elseif frontRay or stuckTime >= 1 then
-            -- Препятствие или застревание — включаем обход
+        elseif blockedLow or blockedHigh or stuckTime >= 1 then
             if stuckTime >= 1 then
                 log("Stuck, finding alternative route")
             end
 
-            -- Выбираем направление обхода: лево или право
             if not avoidDirection then
                 local right = dirToTarget:Cross(Vector3.new(0,1,0)).Unit
                 local left = -right
 
-                -- Проверяем, с какой стороны больше свободного пространства
-                local rightRay = workspace:Raycast(rayOrigin, right * SETTINGS.SIDE_STEP_DIST, rayParams)
-                local leftRay = workspace:Raycast(rayOrigin, left * SETTINGS.SIDE_STEP_DIST, rayParams)
-                local rightFree = rightRay == nil
-                local leftFree = leftRay == nil
+                -- Проверяем свободное пространство на обоих уровнях
+                local function isSideClear(sideDir)
+                    local lowSideRay = workspace:Raycast(lowRayOrigin, sideDir * SETTINGS.SIDE_STEP_DIST, rayParams)
+                    local highSideRay = workspace:Raycast(highRayOrigin, sideDir * SETTINGS.SIDE_STEP_DIST, rayParams)
+                    return lowSideRay == nil and highSideRay == nil
+                end
+                local rightFree = isSideClear(right)
+                local leftFree = isSideClear(left)
 
                 if rightFree and leftFree then
-                    -- Выбираем сторону, которая ближе к цели (по углу)
                     local angleRight = math.acos(math.clamp(right:Dot(dirToTarget), -1, 1))
                     local angleLeft = math.acos(math.clamp(left:Dot(dirToTarget), -1, 1))
                     avoidDirection = angleRight < angleLeft and right or left
@@ -294,39 +286,32 @@ local function walkTo(targetPos)
                 elseif leftFree then
                     avoidDirection = left
                 else
-                    -- Оба заняты, пятись назад и поворачиваем
                     local backDir = -dirToTarget
                     humanoid:MoveTo(currentPos + backDir * 3)
                     task.wait(0.5)
-                    avoidDirection = right -- пробуем право
+                    avoidDirection = right
                 end
                 avoidTimer = tick()
             end
 
-            -- Двигаемся в выбранном боковом направлении + чуть вперёд к цели
             local moveDir = (avoidDirection + dirToTarget * 0.3).Unit
             humanoid:MoveTo(currentPos + moveDir * SETTINGS.SIDE_STEP_DIST)
 
-            -- Через некоторое время сбрасываем направление обхода
             if tick() - avoidTimer > 1.5 then
                 avoidDirection = nil
                 avoidTimer = 0
             end
         else
-            -- Путь свободен, двигаемся прямо к цели
             humanoid:MoveTo(targetPos)
         end
 
-        -- Прыгаем, если застряли и не двигаемся
         if stuckTime >= 2 and moved < 0.1 then
             humanoid:ChangeState(Enum.HumanoidStateType.Jumping)
         end
 
-        -- Если путь перестал быть валидным, перестраиваем
         if usePath and currentWaypoint <= #waypoints then
             local wp = waypoints[currentWaypoint]
             if wp and getDistance(currentPos, wp.Position) > 15 then
-                -- Потеряли путь, перестроим
                 local newPath = PathfindingService:CreatePath({
                     AgentRadius = 2, AgentHeight = 5, AgentCanJump = true, AgentMaxSlope = 45, Costs = { Water = 20 }
                 })
@@ -346,7 +331,6 @@ local function walkTo(targetPos)
 
     humanoid.WalkSpeed = originalWalkSpeed
     humanoid.JumpPower = originalJumpPower
-    -- Финальное движение к цели (без телепорта)
     if getDistance(rootPart.Position, targetPos) > 3 then
         humanoid:MoveTo(targetPos)
         task.wait(0.5)
@@ -354,7 +338,6 @@ local function walkTo(targetPos)
     return getDistance(rootPart.Position, targetPos) <= 3
 end
 
--- Остальной код (sortByDistance, GUI и т.д.) тот же, что в предыдущем полном скрипте, но я вставлю его для целостности
 local function sortByDistance()
     if not rootPart then return end
     local currentPos = rootPart.Position
@@ -442,10 +425,12 @@ local function tryTakeItem(item)
     for attempt = 1, SETTINGS.MAX_RETRIES do
         if not running then return false end
         if attempt > 1 then
+            log("Retrying in " .. SETTINGS.RETRY_DELAY .. "s...")
             task.wait(SETTINGS.RETRY_DELAY)
             if not item.obj or not item.obj.Parent then item.unavailable = true; return false end
         end
         if activatePrompt(item.obj) then item.failedAttempts = 0; return true end
+        log("Attempt " .. attempt .. " failed")
     end
     item.failedAttempts = item.failedAttempts + 1
     if item.failedAttempts >= SETTINGS.MAX_FAILED_ATTEMPTS then item.unavailable = true end
@@ -470,7 +455,7 @@ local function pay()
     end
     return false
 end
--- GUI (полный, тот же, что в предыдущей версии, но с мелкими правками)
+-- GUI (тот же, что в v15.7, без кнопок редкости, только цена)
 local screenGui = Instance.new("ScreenGui")
 screenGui.Name = "AutoBuy_v15"
 screenGui.ResetOnSpawn = false
@@ -493,7 +478,7 @@ local titleLabel = Instance.new("TextLabel")
 titleLabel.Size = UDim2.new(1,-45,1,0)
 titleLabel.Position = UDim2.new(0,10,0,0)
 titleLabel.BackgroundTransparency = 1
-titleLabel.Text = " AutoBuy v15.5"
+titleLabel.Text = " AutoBuy v15.8 | Price filter"
 titleLabel.TextColor3 = Color3.new(1,1,1)
 titleLabel.Font = Enum.Font.GothamBold
 titleLabel.TextSize = 14
@@ -538,46 +523,28 @@ end)
 UIS.InputChanged:Connect(function(input)
     if input == dragInput then updateDrag(input) end
 end)
+
 local filterFrame = Instance.new("Frame")
-filterFrame.Size = UDim2.new(1,-20,0,150)
+filterFrame.Size = UDim2.new(1,-20,0,90)
 filterFrame.Position = UDim2.new(0,10,0,60)
 filterFrame.BackgroundColor3 = Color3.fromRGB(20,20,20)
 filterFrame.Parent = frame
 Instance.new("UICorner", filterFrame).CornerRadius = UDim.new(0,8)
+
 local filterTitle = Instance.new("TextLabel")
 filterTitle.Size = UDim2.new(1,-10,0,20)
 filterTitle.Position = UDim2.new(0,5,0,0)
 filterTitle.BackgroundTransparency = 1
-filterTitle.Text = " FILTERS (rarity buttons decorative)"
+filterTitle.Text = " Price filter (Min / Max)"
 filterTitle.TextColor3 = Color3.new(1,1,1)
 filterTitle.Font = Enum.Font.GothamBold
-filterTitle.TextSize = 10
+filterTitle.TextSize = 11
 filterTitle.TextXAlignment = Enum.TextXAlignment.Left
 filterTitle.Parent = filterFrame
-local rarityButtons = {}
-local rarityOrder = {"common","uncommon","rare","epic","legendary"}
-for idx, rarity in ipairs(rarityOrder) do
-    local btn = Instance.new("TextButton")
-    btn.Size = UDim2.new(0.19,-5,0,30)
-    btn.Position = UDim2.new((idx-1)*0.2,5,0,25)
-    btn.BackgroundColor3 = SETTINGS.RARITY_FILTER[rarity] and Color3.fromRGB(50,200,50) or Color3.fromRGB(80,80,80)
-    btn.Text = (SETTINGS.RARITY_FILTER[rarity] and "V " or "X ") .. RARITY_NAMES[rarity]
-    btn.TextColor3 = Color3.new(1,1,1)
-    btn.Font = Enum.Font.GothamBold
-    btn.TextSize = 9
-    btn.Parent = filterFrame
-    Instance.new("UICorner", btn).CornerRadius = UDim.new(0,4)
-    btn.MouseButton1Click:Connect(function()
-        SETTINGS.RARITY_FILTER[rarity] = not SETTINGS.RARITY_FILTER[rarity]
-        btn.BackgroundColor3 = SETTINGS.RARITY_FILTER[rarity] and Color3.fromRGB(50,200,50) or Color3.fromRGB(80,80,80)
-        btn.Text = (SETTINGS.RARITY_FILTER[rarity] and "V " or "X ") .. RARITY_NAMES[rarity]
-        updateList()
-    end)
-    rarityButtons[rarity] = btn
-end
+
 local priceMinLabel = Instance.new("TextLabel")
 priceMinLabel.Size = UDim2.new(0.15,0,0,25)
-priceMinLabel.Position = UDim2.new(0,5,0,60)
+priceMinLabel.Position = UDim2.new(0,5,0,25)
 priceMinLabel.BackgroundTransparency = 1
 priceMinLabel.Text = "Min $"
 priceMinLabel.TextColor3 = Color3.new(1,1,1)
@@ -587,7 +554,7 @@ priceMinLabel.TextXAlignment = Enum.TextXAlignment.Left
 priceMinLabel.Parent = filterFrame
 local priceMinInput = Instance.new("TextBox")
 priceMinInput.Size = UDim2.new(0.15,0,0,25)
-priceMinInput.Position = UDim2.new(0.15,5,0,60)
+priceMinInput.Position = UDim2.new(0.15,5,0,25)
 priceMinInput.BackgroundColor3 = Color3.fromRGB(40,40,40)
 priceMinInput.TextColor3 = Color3.new(1,1,1)
 priceMinInput.Text = tostring(SETTINGS.MIN_PRICE)
@@ -599,9 +566,10 @@ priceMinInput.FocusLost:Connect(function()
     local newPrice = tonumber(priceMinInput.Text)
     if newPrice then SETTINGS.MIN_PRICE = newPrice updateList() end
 end)
+
 local priceMaxLabel = Instance.new("TextLabel")
 priceMaxLabel.Size = UDim2.new(0.15,0,0,25)
-priceMaxLabel.Position = UDim2.new(0.35,5,0,60)
+priceMaxLabel.Position = UDim2.new(0.35,5,0,25)
 priceMaxLabel.BackgroundTransparency = 1
 priceMaxLabel.Text = "Max $"
 priceMaxLabel.TextColor3 = Color3.new(1,1,1)
@@ -611,7 +579,7 @@ priceMaxLabel.TextXAlignment = Enum.TextXAlignment.Left
 priceMaxLabel.Parent = filterFrame
 local priceMaxInput = Instance.new("TextBox")
 priceMaxInput.Size = UDim2.new(0.15,0,0,25)
-priceMaxInput.Position = UDim2.new(0.5,5,0,60)
+priceMaxInput.Position = UDim2.new(0.5,5,0,25)
 priceMaxInput.BackgroundColor3 = Color3.fromRGB(40,40,40)
 priceMaxInput.TextColor3 = Color3.new(1,1,1)
 priceMaxInput.Text = tostring(SETTINGS.MAX_PRICE)
@@ -623,9 +591,10 @@ priceMaxInput.FocusLost:Connect(function()
     local newPrice = tonumber(priceMaxInput.Text)
     if newPrice then SETTINGS.MAX_PRICE = newPrice updateList() end
 end)
+
 local nameLabel = Instance.new("TextLabel")
 nameLabel.Size = UDim2.new(0.2,0,0,25)
-nameLabel.Position = UDim2.new(0,5,0,90)
+nameLabel.Position = UDim2.new(0,5,0,55)
 nameLabel.BackgroundTransparency = 1
 nameLabel.Text = "Name:"
 nameLabel.TextColor3 = Color3.new(1,1,1)
@@ -635,7 +604,7 @@ nameLabel.TextXAlignment = Enum.TextXAlignment.Left
 nameLabel.Parent = filterFrame
 local nameInput = Instance.new("TextBox")
 nameInput.Size = UDim2.new(0.3,0,0,25)
-nameInput.Position = UDim2.new(0.2,5,0,90)
+nameInput.Position = UDim2.new(0.2,5,0,55)
 nameInput.BackgroundColor3 = Color3.fromRGB(40,40,40)
 nameInput.TextColor3 = Color3.new(1,1,1)
 nameInput.Text = SETTINGS.NAME_FILTER
@@ -647,9 +616,10 @@ Instance.new("UICorner", nameInput).CornerRadius = UDim.new(0,4)
 nameInput.FocusLost:Connect(function()
     SETTINGS.NAME_FILTER = nameInput.Text updateList()
 end)
+
 local shopLabel = Instance.new("TextLabel")
 shopLabel.Size = UDim2.new(0.2,0,0,25)
-shopLabel.Position = UDim2.new(0.5,5,0,90)
+shopLabel.Position = UDim2.new(0.5,5,0,55)
 shopLabel.BackgroundTransparency = 1
 shopLabel.Text = "Shop:"
 shopLabel.TextColor3 = Color3.new(1,1,1)
@@ -659,7 +629,7 @@ shopLabel.TextXAlignment = Enum.TextXAlignment.Left
 shopLabel.Parent = filterFrame
 local shopInput = Instance.new("TextBox")
 shopInput.Size = UDim2.new(0.3,0,0,25)
-shopInput.Position = UDim2.new(0.7,5,0,90)
+shopInput.Position = UDim2.new(0.7,5,0,55)
 shopInput.BackgroundColor3 = Color3.fromRGB(40,40,40)
 shopInput.TextColor3 = Color3.new(1,1,1)
 shopInput.Text = SETTINGS.SHOP_FILTER
@@ -671,6 +641,7 @@ Instance.new("UICorner", shopInput).CornerRadius = UDim.new(0,4)
 shopInput.FocusLost:Connect(function()
     SETTINGS.SHOP_FILTER = shopInput.Text updateList()
 end)
+
 local filterStats = Instance.new("TextLabel")
 filterStats.Size = UDim2.new(1,-10,0,20)
 filterStats.Position = UDim2.new(0,5,0,120)
@@ -680,10 +651,12 @@ filterStats.TextColor3 = Color3.fromRGB(200,200,200)
 filterStats.Font = Enum.Font.Gotham
 filterStats.TextSize = 10
 filterStats.TextXAlignment = Enum.TextXAlignment.Left
-filterStats.Parent = filterFrame
+filterStats.Parent = frame
+filterStats.Position = UDim2.new(0,10,0,155)
+
 local statsFrame = Instance.new("Frame")
 statsFrame.Size = UDim2.new(1,-20,0,80)
-statsFrame.Position = UDim2.new(0,10,0,215)
+statsFrame.Position = UDim2.new(0,10,0,180)
 statsFrame.BackgroundColor3 = Color3.fromRGB(25,25,25)
 statsFrame.Parent = frame
 Instance.new("UICorner", statsFrame).CornerRadius = UDim.new(0,8)
@@ -739,7 +712,7 @@ moneyLabel.TextXAlignment = Enum.TextXAlignment.Left
 moneyLabel.Parent = statsFrame
 local startBtn = Instance.new("TextButton")
 startBtn.Size = UDim2.new(1,-20,0,55)
-startBtn.Position = UDim2.new(0,10,0,300)
+startBtn.Position = UDim2.new(0,10,0,270)
 startBtn.BackgroundColor3 = Color3.fromRGB(80,200,80)
 startBtn.Text = "START"
 startBtn.TextColor3 = Color3.new(0,0,0)
@@ -749,7 +722,7 @@ startBtn.Parent = frame
 Instance.new("UICorner", startBtn).CornerRadius = UDim.new(0,10)
 local statusLabel = Instance.new("TextLabel")
 statusLabel.Size = UDim2.new(1,-20,0,30)
-statusLabel.Position = UDim2.new(0,10,0,360)
+statusLabel.Position = UDim2.new(0,10,0,330)
 statusLabel.BackgroundTransparency = 1
 statusLabel.Text = "Ready"
 statusLabel.TextColor3 = Color3.fromRGB(100,255,100)
@@ -759,7 +732,7 @@ statusLabel.TextXAlignment = Enum.TextXAlignment.Left
 statusLabel.Parent = frame
 local logLabel = Instance.new("TextLabel")
 logLabel.Size = UDim2.new(1,-20,0,100)
-logLabel.Position = UDim2.new(0,10,0,395)
+logLabel.Position = UDim2.new(0,10,0,365)
 logLabel.BackgroundTransparency = 1
 logLabel.Text = " Log:"
 logLabel.TextColor3 = Color3.fromRGB(180,180,180)
@@ -775,8 +748,8 @@ local function addLog(msg)
     logLabel.Text = "Log:\n" .. table.concat(logText, "\n")
 end
 local scrollFrame = Instance.new("ScrollingFrame")
-scrollFrame.Size = UDim2.new(1,-20,1,-510)
-scrollFrame.Position = UDim2.new(0,10,0,500)
+scrollFrame.Size = UDim2.new(1,-20,1,-475)
+scrollFrame.Position = UDim2.new(0,10,0,470)
 scrollFrame.BackgroundColor3 = Color3.fromRGB(20,20,20)
 scrollFrame.BorderSizePixel = 0
 scrollFrame.ScrollBarThickness = 6
@@ -895,21 +868,14 @@ local function mainLoop()
             if takenCount >= SETTINGS.MAX_TOTAL then shouldPay = true break end
             local shopCount = shopLimits[item.shop] or 0
             if shopCount >= SETTINGS.MAX_PER_SHOP then continue end
-            local waitTime = SETTINGS.DELAY_ITEMS - (tick() - lastTakeTime)
-            if waitTime > 0 then
-                local waitStart = tick()
-                while tick() - waitStart < waitTime do
-                    if not running then return end
-                    doQuickMove()
-                    task.wait(0.5)
-                end
-            end
-            if not running then break end
+
             if item.price and not shouldBuyItem(item) then
                 updateList()
                 continue
             end
+
             if item.position then walkTo(item.position) task.wait(0.3) end
+
             local success = tryTakeItem(item)
             if success then
                 item.taken = true
@@ -921,8 +887,24 @@ local function mainLoop()
                 updateList()
                 syncCart()
                 if takenCount >= SETTINGS.MAX_TOTAL then shouldPay = true break end
+
+                addLog("Success! Waiting 4s...")
+                local waitStart = tick()
+                while tick() - waitStart < SETTINGS.SUCCESS_DELAY do
+                    if not running then break end
+                    doQuickMove()
+                    task.wait(0.5)
+                end
+            else
+                addLog("Failed. Waiting 1s...")
+                local waitStart = tick()
+                while tick() - waitStart < SETTINGS.FAIL_DELAY do
+                    if not running then break end
+                    doQuickMove()
+                    task.wait(0.5)
+                end
+                updateList()
             end
-            task.wait(0.3)
         end
         if shouldPay or takenCount > 0 then
             goToPay()
@@ -954,4 +936,4 @@ findClothes()
 sortByDistance()
 updateStats()
 updateList()
-print("Script v15.5 loaded!")
+print("Script v15.8 loaded!")
