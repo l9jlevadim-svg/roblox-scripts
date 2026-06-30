@@ -1,4 +1,4 @@
--- clean v15.8 avoid head-level obstacles
+-- v16.0 GUI-powered price, cart sync, restock timer
 local Workspace = game:GetService("Workspace")
 local Players = game:GetService("Players")
 local VirtualUser = game:GetService("VirtualUser")
@@ -10,13 +10,11 @@ local character = player.Character or player.CharacterAdded:Wait()
 local humanoid = character:WaitForChild("Humanoid")
 local rootPart = character:WaitForChild("HumanoidRootPart")
 print("\n" .. string.rep("=", 80))
-print("AUTOBUY v15.8")
+print("AUTOBUY v16.0")
 print(string.rep("=", 80) .. "\n")
 local SETTINGS = {
     MAX_PER_SHOP = 15,
     MAX_TOTAL = 15,
-    REFRESH_TIME = 600,
-    RETRY_DELAY = 1,
     SUCCESS_DELAY = 4,
     FAIL_DELAY = 1,
     MOVE_INTERVAL = 2,
@@ -29,9 +27,8 @@ local SETTINGS = {
     MAX_PRICE = 999999,
     NAME_FILTER = "",
     SHOP_FILTER = "",
-    OBSTACLE_CHECK_DIST = 3,    -- уменьшили, чтобы раньше реагировать на вешалки
+    OBSTACLE_CHECK_DIST = 3.5,
     SIDE_STEP_DIST = 5,
-    STUCK_TIMEOUT = 3,
     RARITY_BY_PRICE = {
         { min = 10000, rarity = "legendary" },
         { min = 5000,  rarity = "epic" },
@@ -66,53 +63,18 @@ local lastMoveTime = 0
 local totalItemsBought = 0
 local totalMoneySpent = 0
 local cycleCount = 0
-local function safeRequire(inst)
-    if not inst then return nil end
-    local ok, mod = pcall(require, inst)
-    return ok and mod or nil
+
+-- GUI elements cache
+local timerLabel = nil
+local countLabel = nil
+
+local function log(msg)
+    print("[AutoBuy] " .. msg)
 end
-local Configs = ReplicatedStorage:FindFirstChild("Configs")
-local ClothingConfig = safeRequire(ReplicatedStorage:FindFirstChild("ClothingConfig"))
-local AccessoryCfg = safeRequire(Configs and Configs:FindFirstChild("AccessoryConfig"))
-local NAME_INDEX = {}
-if ClothingConfig or AccessoryCfg then
-    local function addToIndex(name, fair, profile)
-        if name and fair then
-            NAME_INDEX[tostring(name):lower()] = { fair = fair, profile = profile or "normal" }
-        end
-    end
-    if ClothingConfig and ClothingConfig.SHOP_ITEMS then
-        local function scan(node, depth)
-            if type(node) ~= "table" or depth > 6 then return end
-            if node.name and (node.fairPrice or node.value) then
-                addToIndex(node.name, node.fairPrice or node.value, node.economyProfile)
-                return
-            end
-            for _, c in pairs(node) do scan(c, depth + 1) end
-        end
-        scan(ClothingConfig.SHOP_ITEMS, 0)
-    end
-    if AccessoryCfg then
-        local function scanAcc(node, depth)
-            if type(node) ~= "table" or depth > 6 then return end
-            if node.name and (node.fairPrice or node.value) then
-                addToIndex(node.name, node.fairPrice or node.value, node.economyProfile)
-                return
-            end
-            for _, c in pairs(node) do scanAcc(c, depth + 1) end
-        end
-        scanAcc(AccessoryCfg, 0)
-    end
-end
-local function getFairPrice(name)
-    local rec = NAME_INDEX[tostring(name or ""):lower()]
-    return rec and rec.fair
-end
-local function rarityByPrice(price)
-    for _, tier in ipairs(SETTINGS.RARITY_BY_PRICE) do
-        if price >= tier.min then return tier.rarity end
-    end
-    return "common"
+local function formatNumber(num)
+    if num >= 1000000 then return string.format("%.1fM", num / 1000000)
+    elseif num >= 1000 then return string.format("%.1fK", num / 1000)
+    else return tostring(num) end
 end
 local function findPosition(obj)
     local checkObj = obj
@@ -129,14 +91,6 @@ end
 local function getDistance(pos1, pos2)
     return (pos1 - pos2).Magnitude
 end
-local function log(msg)
-    print("[AutoBuy] " .. msg)
-end
-local function formatNumber(num)
-    if num >= 1000000 then return string.format("%.1fM", num / 1000000)
-    elseif num >= 1000 then return string.format("%.1fK", num / 1000)
-    else return tostring(num) end
-end
 local function shouldBuyItem(item)
     if not item.price then return false end
     if item.price < SETTINGS.MIN_PRICE or item.price > SETTINGS.MAX_PRICE then
@@ -150,39 +104,106 @@ local function shouldBuyItem(item)
     end
     return true
 end
-local function getRealCartCount()
-    if not player:FindFirstChild("PlayerGui") then return nil end
-    for _, gui in ipairs(player.PlayerGui:GetChildren()) do
-        for _, child in ipairs(gui:GetDescendants()) do
-            if child:IsA("TextLabel") or child:IsA("TextButton") then
-                local text = child.Text or ""
-                local name = (child.Name or ""):lower()
-                if name:find("cart") or name:find("item") or name:find("count") or name:find("total") then
-                    local number = text:match("(%d+)")
-                    if number then
-                        local count = tonumber(number)
-                        if count and count >= 0 and count <= 100 then return count end
-                    end
+
+-- Поиск GUI-элементов
+local function findGuiElements()
+    local playerGui = player:FindFirstChild("PlayerGui")
+    if not playerGui then return end
+    for _, gui in ipairs(playerGui:GetChildren()) do
+        if gui:IsA("ScreenGui") then
+            for _, el in ipairs(gui:GetDescendants()) do
+                if el.Name == "TimerLabel" and (el:IsA("TextLabel") or el:IsA("TextBox")) then
+                    timerLabel = el
+                elseif el.Name == "Count" and (el:IsA("TextLabel") or el:IsA("TextBox")) then
+                    countLabel = el
+                end
+            end
+        end
+    end
+    if timerLabel then log("TimerLabel found") end
+    if countLabel then log("Count label found") end
+end
+
+-- Чтение оставшегося времени рестока (секунды)
+local function parseRestockTime()
+    if not timerLabel then return nil end
+    local text = timerLabel.Text
+    local min, sec = text:match("(%d+):(%d+)")
+    if min and sec then
+        return tonumber(min)*60 + tonumber(sec)
+    end
+    return nil
+end
+
+-- Ожидание открытия магазина (когда таймер показывает 10 мин или около того)
+local function waitForShopOpen()
+    log("Waiting for shop to open...")
+    while running do
+        local remaining = parseRestockTime()
+        if remaining and remaining >= 590 then  -- 9:50 или больше
+            log("Shop is open (timer: " .. remaining .. "s)")
+            return
+        end
+        task.wait(1)
+    end
+end
+
+-- Синхронизация корзины через Count
+local function syncCartCount()
+    if not countLabel then return end
+    local text = countLabel.Text
+    local current, max = text:match("(%d+)/(%d+)")
+    if current then
+        takenCount = tonumber(current)
+        SETTINGS.MAX_TOTAL = tonumber(max) or 15
+    end
+end
+
+-- Получение цены из GUI (по названию предмета)
+local function getItemPriceFromGUI(itemName)
+    local playerGui = player:FindFirstChild("PlayerGui")
+    if not playerGui then return nil end
+    local labels = {}
+    for _, gui in ipairs(playerGui:GetChildren()) do
+        if gui:IsA("ScreenGui") then
+            for _, el in ipairs(gui:GetDescendants()) do
+                if (el:IsA("TextLabel") or el:IsA("TextBox")) and el.Text ~= "" then
+                    table.insert(labels, el)
+                end
+            end
+        end
+    end
+    for i, label in ipairs(labels) do
+        if label.Text:lower():find(itemName:lower(), 1, true) then
+            for j = i, math.min(i+3, #labels) do
+                local txt = labels[j].Text
+                local num = txt:match("(%d+)%s*R%$")
+                if num then
+                    return tonumber(num)
                 end
             end
         end
     end
     return nil
 end
-local function syncCart()
-    local realCount = getRealCartCount()
-    if realCount ~= nil then
-        if realCount ~= takenCount then
-            takenCount = realCount
+
+-- Поиск продавца
+local function findSeller()
+    if seller then return seller end
+    for _, obj in ipairs(Workspace:GetDescendants()) do
+        if obj:IsA("ProximityPrompt") then
+            local action = (obj.ActionText or ""):lower()
+            if action:find("поговорить") or action:find("talk") or action:find("оплатить") or action:find("pay") then
+                seller = { obj = obj, position = findPosition(obj) }
+                log("Seller found: " .. obj.Parent.Name)
+                return seller
+            end
         end
-        return realCount
     end
-    return takenCount
+    return nil
 end
 
--- ============================================
--- УМНЫЙ ОБХОД ПРЕПЯТСТВИЙ (с учётом вешалок на уровне головы)
--- ============================================
+-- Умный обход
 local function walkTo(targetPos)
     if not targetPos or not humanoid or not rootPart then return false end
     local startPos = rootPart.Position
@@ -210,7 +231,6 @@ local function walkTo(targetPos)
     local currentWaypoint = 1
     local startTime = tick()
     local maxTime = math.min(totalDistance * 0.8, 60)
-
     local avoidDirection = nil
     local avoidTimer = 0
 
@@ -222,8 +242,7 @@ local function walkTo(targetPos)
         end
 
         local currentPos = rootPart.Position
-        local distToTarget = getDistance(currentPos, targetPos)
-        if distToTarget <= 3 then break end
+        if getDistance(currentPos, targetPos) <= 3 then break end
 
         local moved = getDistance(currentPos, lastPosition)
         if moved < 0.3 then
@@ -240,13 +259,12 @@ local function walkTo(targetPos)
         rayParams.FilterType = Enum.RaycastFilterType.Blacklist
         rayParams.FilterDescendantsInstances = {character}
 
-        -- Лучи на двух уровнях: грудь и голова
-        local lowRayOrigin = currentPos + Vector3.new(0, 1.5, 0)
-        local highRayOrigin = currentPos + Vector3.new(0, 2.5, 0)
-        local frontLowRay = workspace:Raycast(lowRayOrigin, dirToTarget * SETTINGS.OBSTACLE_CHECK_DIST, rayParams)
-        local frontHighRay = workspace:Raycast(highRayOrigin, dirToTarget * SETTINGS.OBSTACLE_CHECK_DIST, rayParams)
-        local blockedLow = frontLowRay ~= nil
-        local blockedHigh = frontHighRay ~= nil
+        -- Проверка препятствий на высоте 2.5-4.5
+        local lowCheck = currentPos + Vector3.new(0, 2.5, 0)
+        local highCheck = currentPos + Vector3.new(0, 4.5, 0)
+        local lowRay = workspace:Raycast(lowCheck, dirToTarget * SETTINGS.OBSTACLE_CHECK_DIST, rayParams)
+        local highRay = workspace:Raycast(highCheck, dirToTarget * SETTINGS.OBSTACLE_CHECK_DIST, rayParams)
+        local blocked = lowRay ~= nil or highRay ~= nil
 
         if usePath and stuckTime < 1 and not avoidDirection then
             if currentWaypoint <= #waypoints then
@@ -259,56 +277,38 @@ local function walkTo(targetPos)
             else
                 humanoid:MoveTo(targetPos)
             end
-        elseif blockedLow or blockedHigh or stuckTime >= 1 then
-            if stuckTime >= 1 then
-                log("Stuck, finding alternative route")
-            end
-
+        elseif blocked or stuckTime >= 1 then
+            if stuckTime >= 1 then log("Stuck, finding alternative route") end
             if not avoidDirection then
                 local right = dirToTarget:Cross(Vector3.new(0,1,0)).Unit
                 local left = -right
-
-                -- Проверяем свободное пространство на обоих уровнях
                 local function isSideClear(sideDir)
-                    local lowSideRay = workspace:Raycast(lowRayOrigin, sideDir * SETTINGS.SIDE_STEP_DIST, rayParams)
-                    local highSideRay = workspace:Raycast(highRayOrigin, sideDir * SETTINGS.SIDE_STEP_DIST, rayParams)
-                    return lowSideRay == nil and highSideRay == nil
+                    local r1 = workspace:Raycast(lowCheck, sideDir * SETTINGS.SIDE_STEP_DIST, rayParams)
+                    local r2 = workspace:Raycast(highCheck, sideDir * SETTINGS.SIDE_STEP_DIST, rayParams)
+                    return r1 == nil and r2 == nil
                 end
                 local rightFree = isSideClear(right)
                 local leftFree = isSideClear(left)
-
                 if rightFree and leftFree then
                     local angleRight = math.acos(math.clamp(right:Dot(dirToTarget), -1, 1))
                     local angleLeft = math.acos(math.clamp(left:Dot(dirToTarget), -1, 1))
                     avoidDirection = angleRight < angleLeft and right or left
-                elseif rightFree then
-                    avoidDirection = right
-                elseif leftFree then
-                    avoidDirection = left
+                elseif rightFree then avoidDirection = right
+                elseif leftFree then avoidDirection = left
                 else
-                    local backDir = -dirToTarget
-                    humanoid:MoveTo(currentPos + backDir * 3)
+                    humanoid:MoveTo(currentPos - dirToTarget * 3)
                     task.wait(0.5)
                     avoidDirection = right
                 end
                 avoidTimer = tick()
             end
-
             local moveDir = (avoidDirection + dirToTarget * 0.3).Unit
             humanoid:MoveTo(currentPos + moveDir * SETTINGS.SIDE_STEP_DIST)
-
-            if tick() - avoidTimer > 1.5 then
-                avoidDirection = nil
-                avoidTimer = 0
-            end
+            if tick() - avoidTimer > 1.5 then avoidDirection = nil; avoidTimer = 0 end
         else
             humanoid:MoveTo(targetPos)
         end
-
-        if stuckTime >= 2 and moved < 0.1 then
-            humanoid:ChangeState(Enum.HumanoidStateType.Jumping)
-        end
-
+        if stuckTime >= 2 and moved < 0.1 then humanoid:ChangeState(Enum.HumanoidStateType.Jumping) end
         if usePath and currentWaypoint <= #waypoints then
             local wp = waypoints[currentWaypoint]
             if wp and getDistance(currentPos, wp.Position) > 15 then
@@ -317,24 +317,15 @@ local function walkTo(targetPos)
                 })
                 local ok = pcall(function() newPath:ComputeAsync(currentPos, targetPos) end)
                 if ok and newPath.Status == Enum.PathStatus.Success then
-                    path = newPath
-                    waypoints = newPath:GetWaypoints()
-                    currentWaypoint = 1
-                else
-                    usePath = false
-                end
+                    path = newPath; waypoints = newPath:GetWaypoints(); currentWaypoint = 1
+                else usePath = false end
             end
         end
-
         task.wait(0.1)
     end
-
     humanoid.WalkSpeed = originalWalkSpeed
     humanoid.JumpPower = originalJumpPower
-    if getDistance(rootPart.Position, targetPos) > 3 then
-        humanoid:MoveTo(targetPos)
-        task.wait(0.5)
-    end
+    if getDistance(rootPart.Position, targetPos) > 3 then humanoid:MoveTo(targetPos); task.wait(0.5) end
     return getDistance(rootPart.Position, targetPos) <= 3
 end
 
@@ -387,20 +378,13 @@ local function findClothes()
                 end
                 local floor = "1st floor"
                 if position and position.Y > 10 then floor = "2nd floor" end
-                local fair = getFairPrice(rawName)
-                local rarity = fair and rarityByPrice(fair) or nil
-                local price = fair
+                -- Цену пока не знаем, получим через GUI при подходе
                 table.insert(clothes, {
                     obj = obj, parent = parent, name = rawName,
                     position = position, shop = shopName, floor = floor,
                     taken = false, unavailable = false, failedAttempts = 0,
-                    rarity = rarity, price = price, slotRef = parent
+                    rarity = nil, price = nil, slotRef = parent
                 })
-            end
-            if action:find("Поговорить") or action:find("Talk") then
-                if not seller then
-                    seller = { obj = obj, position = findPosition(obj) }
-                end
             end
         end
     end
@@ -425,11 +409,14 @@ local function tryTakeItem(item)
     for attempt = 1, SETTINGS.MAX_RETRIES do
         if not running then return false end
         if attempt > 1 then
-            log("Retrying in " .. SETTINGS.RETRY_DELAY .. "s...")
-            task.wait(SETTINGS.RETRY_DELAY)
+            task.wait(SETTINGS.FAIL_DELAY)
             if not item.obj or not item.obj.Parent then item.unavailable = true; return false end
         end
-        if activatePrompt(item.obj) then item.failedAttempts = 0; return true end
+        if activatePrompt(item.obj) then
+            -- После успешного взятия синхронизируем корзину
+            syncCartCount()
+            return true
+        end
         log("Attempt " .. attempt .. " failed")
     end
     item.failedAttempts = item.failedAttempts + 1
@@ -455,9 +442,38 @@ local function pay()
     end
     return false
 end
--- GUI (тот же, что в v15.7, без кнопок редкости, только цена)
+local function goToPay()
+    if takenCount == 0 then return end
+    findSeller()
+    if not seller then
+        log("Seller not found")
+        return
+    end
+    if seller.position then walkTo(seller.position) task.wait(1) end
+    activatePrompt(seller.obj)
+    task.wait(2)
+    local paid = pay()
+    if paid then
+        paidCount = paidCount + 1
+        totalItemsBought = totalItemsBought + takenCount
+        cycleCount = cycleCount + 1
+        takenCount = 0
+    else
+        task.wait(1)
+        paid = pay()
+        if paid then
+            paidCount = paidCount + 1
+            totalItemsBought = totalItemsBought + takenCount
+            cycleCount = cycleCount + 1
+            takenCount = 0
+        else
+            log("Payment failed")
+        end
+    end
+end
+-- GUI
 local screenGui = Instance.new("ScreenGui")
-screenGui.Name = "AutoBuy_v15"
+screenGui.Name = "AutoBuy_v16"
 screenGui.ResetOnSpawn = false
 screenGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
 screenGui.Parent = player:WaitForChild("PlayerGui")
@@ -478,7 +494,7 @@ local titleLabel = Instance.new("TextLabel")
 titleLabel.Size = UDim2.new(1,-45,1,0)
 titleLabel.Position = UDim2.new(0,10,0,0)
 titleLabel.BackgroundTransparency = 1
-titleLabel.Text = " AutoBuy v15.8 | Price filter"
+titleLabel.Text = " AutoBuy v16.0 | GUI sync"
 titleLabel.TextColor3 = Color3.new(1,1,1)
 titleLabel.Font = Enum.Font.GothamBold
 titleLabel.TextSize = 14
@@ -523,14 +539,12 @@ end)
 UIS.InputChanged:Connect(function(input)
     if input == dragInput then updateDrag(input) end
 end)
-
 local filterFrame = Instance.new("Frame")
 filterFrame.Size = UDim2.new(1,-20,0,90)
 filterFrame.Position = UDim2.new(0,10,0,60)
 filterFrame.BackgroundColor3 = Color3.fromRGB(20,20,20)
 filterFrame.Parent = frame
 Instance.new("UICorner", filterFrame).CornerRadius = UDim.new(0,8)
-
 local filterTitle = Instance.new("TextLabel")
 filterTitle.Size = UDim2.new(1,-10,0,20)
 filterTitle.Position = UDim2.new(0,5,0,0)
@@ -541,7 +555,6 @@ filterTitle.Font = Enum.Font.GothamBold
 filterTitle.TextSize = 11
 filterTitle.TextXAlignment = Enum.TextXAlignment.Left
 filterTitle.Parent = filterFrame
-
 local priceMinLabel = Instance.new("TextLabel")
 priceMinLabel.Size = UDim2.new(0.15,0,0,25)
 priceMinLabel.Position = UDim2.new(0,5,0,25)
@@ -566,7 +579,6 @@ priceMinInput.FocusLost:Connect(function()
     local newPrice = tonumber(priceMinInput.Text)
     if newPrice then SETTINGS.MIN_PRICE = newPrice updateList() end
 end)
-
 local priceMaxLabel = Instance.new("TextLabel")
 priceMaxLabel.Size = UDim2.new(0.15,0,0,25)
 priceMaxLabel.Position = UDim2.new(0.35,5,0,25)
@@ -591,7 +603,6 @@ priceMaxInput.FocusLost:Connect(function()
     local newPrice = tonumber(priceMaxInput.Text)
     if newPrice then SETTINGS.MAX_PRICE = newPrice updateList() end
 end)
-
 local nameLabel = Instance.new("TextLabel")
 nameLabel.Size = UDim2.new(0.2,0,0,25)
 nameLabel.Position = UDim2.new(0,5,0,55)
@@ -616,7 +627,6 @@ Instance.new("UICorner", nameInput).CornerRadius = UDim.new(0,4)
 nameInput.FocusLost:Connect(function()
     SETTINGS.NAME_FILTER = nameInput.Text updateList()
 end)
-
 local shopLabel = Instance.new("TextLabel")
 shopLabel.Size = UDim2.new(0.2,0,0,25)
 shopLabel.Position = UDim2.new(0.5,5,0,55)
@@ -641,10 +651,9 @@ Instance.new("UICorner", shopInput).CornerRadius = UDim.new(0,4)
 shopInput.FocusLost:Connect(function()
     SETTINGS.SHOP_FILTER = shopInput.Text updateList()
 end)
-
 local filterStats = Instance.new("TextLabel")
 filterStats.Size = UDim2.new(1,-10,0,20)
-filterStats.Position = UDim2.new(0,5,0,120)
+filterStats.Position = UDim2.new(0,10,0,155)
 filterStats.BackgroundTransparency = 1
 filterStats.Text = "Total: 0 | Filtered: 0"
 filterStats.TextColor3 = Color3.fromRGB(200,200,200)
@@ -652,8 +661,6 @@ filterStats.Font = Enum.Font.Gotham
 filterStats.TextSize = 10
 filterStats.TextXAlignment = Enum.TextXAlignment.Left
 filterStats.Parent = frame
-filterStats.Position = UDim2.new(0,10,0,155)
-
 local statsFrame = Instance.new("Frame")
 statsFrame.Size = UDim2.new(1,-20,0,80)
 statsFrame.Position = UDim2.new(0,10,0,180)
@@ -826,69 +833,64 @@ local function updateList()
     end
     scrollFrame.CanvasSize = UDim2.new(0,0,0, listLayout.AbsoluteContentSize.Y + 10)
 end
-local function goToPay()
-    if takenCount == 0 then return end
-    if not seller then return end
-    if seller.position then walkTo(seller.position) task.wait(1) end
-    activatePrompt(seller.obj)
-    task.wait(2)
-    local paid = pay()
-    if paid then
-        paidCount = paidCount + 1
-        totalItemsBought = totalItemsBought + takenCount
-        cycleCount = cycleCount + 1
-        takenCount = 0
-        updateStats()
-    else
-        task.wait(1)
-        paid = pay()
-        if paid then
-            paidCount = paidCount + 1
-            totalItemsBought = totalItemsBought + takenCount
-            cycleCount = cycleCount + 1
-            takenCount = 0
-            updateStats()
-        end
-    end
-end
+
 local function mainLoop()
     while running do
+        -- Сброс
         for _, item in ipairs(clothes) do item.taken = false item.unavailable = false item.failedAttempts = 0 end
         shopLimits = {}
         takenCount = 0
-        lastTakeTime = 0
         lastMoveTime = tick()
         sortByDistance()
         updateList()
+        addLog("New cycle")
         local shouldPay = false
         for _, item in ipairs(clothes) do
             if not running then break end
             if item.taken or item.unavailable then continue end
-            syncCart()
+            syncCartCount()
             if takenCount >= SETTINGS.MAX_TOTAL then shouldPay = true break end
             local shopCount = shopLimits[item.shop] or 0
             if shopCount >= SETTINGS.MAX_PER_SHOP then continue end
 
-            if item.price and not shouldBuyItem(item) then
+            -- Подходим к предмету, получаем цену из GUI
+            if item.position then
+                walkTo(item.position)
+                task.wait(0.3)
+            end
+            -- Попытка прочитать цену из GUI (до 2 секунд)
+            local price = nil
+            local start = tick()
+            while not price and tick() - start < 2 do
+                price = getItemPriceFromGUI(item.name)
+                if not price then task.wait(0.2) end
+            end
+            if price then
+                item.price = price
+                item.rarity = rarityByPrice(price)
+                -- Проверка фильтра
+                if not shouldBuyItem(item) then
+                    updateList()
+                    continue
+                end
+            else
+                log("Could not read price for " .. item.name)
+                item.unavailable = true
                 updateList()
                 continue
             end
-
-            if item.position then walkTo(item.position) task.wait(0.3) end
 
             local success = tryTakeItem(item)
             if success then
                 item.taken = true
                 takenCount = takenCount + 1
                 shopLimits[item.shop] = (shopLimits[item.shop] or 0) + 1
-                lastTakeTime = tick()
-                totalMoneySpent = totalMoneySpent + (item.price or 0)
+                totalMoneySpent = totalMoneySpent + item.price
                 updateStats()
                 updateList()
-                syncCart()
+                syncCartCount()
                 if takenCount >= SETTINGS.MAX_TOTAL then shouldPay = true break end
-
-                addLog("Success! Waiting 4s...")
+                addLog("Success! Waiting " .. SETTINGS.SUCCESS_DELAY .. "s")
                 local waitStart = tick()
                 while tick() - waitStart < SETTINGS.SUCCESS_DELAY do
                     if not running then break end
@@ -896,7 +898,7 @@ local function mainLoop()
                     task.wait(0.5)
                 end
             else
-                addLog("Failed. Waiting 1s...")
+                addLog("Failed. Waiting " .. SETTINGS.FAIL_DELAY .. "s")
                 local waitStart = tick()
                 while tick() - waitStart < SETTINGS.FAIL_DELAY do
                     if not running then break end
@@ -910,13 +912,13 @@ local function mainLoop()
             goToPay()
             if running then sortByDistance() updateList() end
         end
-        for i = 1, SETTINGS.REFRESH_TIME do
-            if not running then break end
-            if i % 2 == 0 then doQuickMove() end
-            task.wait(1)
-        end
+        -- Ожидание рестока
+        waitForShopOpen()
+        -- Перезагрузка ассортимента
+        findClothes()
     end
 end
+
 startBtn.MouseButton1Click:Connect(function()
     if running then
         running = false
@@ -926,14 +928,13 @@ startBtn.MouseButton1Click:Connect(function()
         running = true
         startBtn.Text = "STOP"
         startBtn.BackgroundColor3 = Color3.fromRGB(220,50,50)
+        findGuiElements()
+        findShops()
+        findClothes()
         sortByDistance()
+        updateStats()
         updateList()
         task.spawn(mainLoop)
     end
 end)
-findShops()
-findClothes()
-sortByDistance()
-updateStats()
-updateList()
-print("Script v15.8 loaded!")
+print("Script v16.0 loaded!")
