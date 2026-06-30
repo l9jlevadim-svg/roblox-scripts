@@ -1,4 +1,4 @@
--- v16.4 GUI restock timer display
+-- v19.0 SlotPriceReveal cached prices, filters before walking
 local Workspace = game:GetService("Workspace")
 local Players = game:GetService("Players")
 local VirtualUser = game:GetService("VirtualUser")
@@ -10,7 +10,7 @@ local character = player.Character or player.CharacterAdded:Wait()
 local humanoid = character:WaitForChild("Humanoid")
 local rootPart = character:WaitForChild("HumanoidRootPart")
 print("\n" .. string.rep("=", 80))
-print("AUTOBUY v16.4")
+print("AUTOBUY v19.0")
 print(string.rep("=", 80) .. "\n")
 local SETTINGS = {
     MAX_PER_SHOP = 15,
@@ -63,70 +63,28 @@ local lastMoveTime = 0
 local totalItemsBought = 0
 local totalMoneySpent = 0
 local cycleCount = 0
+local priceCache = {}
+local ShopRemotes = ReplicatedStorage:FindFirstChild("ShopRemotes")
+local SlotPriceReveal = ShopRemotes and ShopRemotes:FindFirstChild("SlotPriceReveal")
+if SlotPriceReveal then
+    SlotPriceReveal.OnClientEvent:Connect(function(payload)
+        if type(payload) == "table" then
+            for _, item in ipairs(payload) do
+                if type(item) == "table" and item.name and item.price then
+                    local name = tostring(item.name)
+                    local price = tonumber(item.price)
+                    if name and price then
+                        priceCache[name] = price
+                    end
+                end
+            end
+        end
+    end)
+    print("Connected to SlotPriceReveal")
+else
+    print("SlotPriceReveal not found, will rely on GUI")
+end
 
--- safe require
-local function safeRequire(inst)
-    if not inst then return nil end
-    local ok, mod = pcall(require, inst)
-    return ok and mod or nil
-end
-local Configs = ReplicatedStorage:FindFirstChild("Configs")
-local ClothingConfig = safeRequire(ReplicatedStorage:FindFirstChild("ClothingConfig"))
-local AccessoryCfg = safeRequire(Configs and Configs:FindFirstChild("AccessoryConfig"))
-local NAME_INDEX = {}
-if ClothingConfig or AccessoryCfg then
-    local function addToIndex(name, fair)
-        if name and fair then
-            NAME_INDEX[tostring(name):lower()] = fair
-        end
-    end
-    if ClothingConfig and ClothingConfig.SHOP_ITEMS then
-        local function scan(node, depth)
-            if type(node) ~= "table" or depth > 6 then return end
-            if node.name and (node.fairPrice or node.value) then
-                addToIndex(node.name, node.fairPrice or node.value)
-                return
-            end
-            for _, c in pairs(node) do scan(c, depth + 1) end
-        end
-        scan(ClothingConfig.SHOP_ITEMS, 0)
-    end
-    if AccessoryCfg then
-        local function scanAcc(node, depth)
-            if type(node) ~= "table" or depth > 6 then return end
-            if node.name and (node.fairPrice or node.value) then
-                addToIndex(node.name, node.fairPrice or node.value)
-                return
-            end
-            for _, c in pairs(node) do scanAcc(c, depth + 1) end
-        end
-        scanAcc(AccessoryCfg, 0)
-    end
-end
-local function getFairPrice(name)
-    return NAME_INDEX[tostring(name or ""):lower()]
-end
-local function rarityByPrice(price)
-    for _, tier in ipairs(SETTINGS.RARITY_BY_PRICE) do
-        if price >= tier.min then return tier.rarity end
-    end
-    return "common"
-end
-local function findPosition(obj)
-    local checkObj = obj
-    for i = 1, 6 do
-        if checkObj then
-            if checkObj:IsA("BasePart") then return checkObj.CFrame.Position end
-            local part = checkObj:FindFirstChildWhichIsA("BasePart")
-            if part then return part.CFrame.Position end
-            checkObj = checkObj.Parent
-        end
-    end
-    return nil
-end
-local function getDistance(pos1, pos2)
-    return (pos1 - pos2).Magnitude
-end
 local function log(msg)
     print("[AutoBuy] " .. msg)
 end
@@ -135,21 +93,52 @@ local function formatNumber(num)
     elseif num >= 1000 then return string.format("%.1fK", num / 1000)
     else return tostring(num) end
 end
+local function findPosition(obj)
+    local current = obj
+    for _ = 1, 6 do
+        if current:IsA("BasePart") then return current.Position end
+        current = current.Parent
+        if not current then break end
+    end
+    return nil
+end
+local function getItemPriceFromGUI(itemName)
+    local playerGui = player:FindFirstChild("PlayerGui")
+    if not playerGui then return nil end
+    local labels = {}
+    for _, gui in ipairs(playerGui:GetChildren()) do
+        if gui:IsA("ScreenGui") then
+            for _, el in ipairs(gui:GetDescendants()) do
+                if (el:IsA("TextLabel") or el:IsA("TextBox")) and el.Text ~= "" then
+                    table.insert(labels, el)
+                end
+            end
+        end
+    end
+    for i, label in ipairs(labels) do
+        if label.Text:lower():find(itemName:lower(), 1, true) then
+            for j = i, math.min(i+5, #labels) do
+                local txt = labels[j].Text
+                local num = txt:match("(%d+)%s*R%$")
+                if num then return tonumber(num) end
+            end
+        end
+    end
+    return nil
+end
+local function rarityByPrice(price)
+    for _, tier in ipairs(SETTINGS.RARITY_BY_PRICE) do
+        if price >= tier.min then return tier.rarity end
+    end
+    return "common"
+end
 local function shouldBuyItem(item)
     if not item.price then return false end
-    if item.price < SETTINGS.MIN_PRICE or item.price > SETTINGS.MAX_PRICE then
-        return false
-    end
-    if SETTINGS.NAME_FILTER ~= "" and not item.name:lower():find(SETTINGS.NAME_FILTER:lower()) then
-        return false
-    end
-    if SETTINGS.SHOP_FILTER ~= "" and not item.shop:lower():find(SETTINGS.SHOP_FILTER:lower()) then
-        return false
-    end
+    if item.price < SETTINGS.MIN_PRICE or item.price > SETTINGS.MAX_PRICE then return false end
+    if SETTINGS.NAME_FILTER ~= "" and not item.name:lower():find(SETTINGS.NAME_FILTER:lower()) then return false end
+    if SETTINGS.SHOP_FILTER ~= "" and not item.shop:lower():find(SETTINGS.SHOP_FILTER:lower()) then return false end
     return true
 end
-
--- Find seller
 local function findSeller()
     if seller then return seller end
     for _, obj in ipairs(Workspace:GetDescendants()) do
@@ -164,12 +153,10 @@ local function findSeller()
     end
     return nil
 end
-
--- Smart walk (no teleport)
 local function walkTo(targetPos)
     if not targetPos or not humanoid or not rootPart then return false end
     local startPos = rootPart.Position
-    local totalDistance = getDistance(startPos, targetPos)
+    local totalDistance = (targetPos - startPos).Magnitude
     if totalDistance <= 3 then return true end
 
     local originalWalkSpeed = humanoid.WalkSpeed
@@ -178,147 +165,59 @@ local function walkTo(targetPos)
     humanoid.JumpPower = SETTINGS.JUMP_POWER
 
     local path = PathfindingService:CreatePath({
-        AgentRadius = 2,
-        AgentHeight = 5,
-        AgentCanJump = true,
-        AgentMaxSlope = 45,
-        Costs = { Water = 20 }
+        AgentRadius = 2, AgentHeight = 5, AgentCanJump = true, AgentMaxSlope = 45, Costs = { Water = 20 }
     })
-    local pathSuccess = pcall(function() path:ComputeAsync(rootPart.Position, targetPos) end) and path.Status == Enum.PathStatus.Success
-    local waypoints = pathSuccess and path:GetWaypoints() or {}
-    local usePath = pathSuccess and #waypoints > 0
+    pcall(function() path:ComputeAsync(rootPart.Position, targetPos) end)
+    local waypoints = path:GetWaypoints()
+    if #waypoints == 0 then
+        humanoid:MoveTo(targetPos)
+        local t = tick()
+        while (rootPart.Position - targetPos).Magnitude > 3 and tick()-t < 8 do task.wait(0.2) end
+        humanoid.WalkSpeed = originalWalkSpeed
+        humanoid.JumpPower = originalJumpPower
+        return (rootPart.Position - targetPos).Magnitude <= 3
+    end
 
-    local lastPosition = rootPart.Position
+    local lastPos = rootPart.Position
     local stuckTime = 0
-    local currentWaypoint = 1
+    local wpIdx = 1
     local startTime = tick()
     local maxTime = math.min(totalDistance * 0.8, 60)
-    local avoidDirection = nil
-    local avoidTimer = 0
-
-    while tick() - startTime < maxTime do
-        if not running then
-            humanoid.WalkSpeed = originalWalkSpeed
-            humanoid.JumpPower = originalJumpPower
-            return false
-        end
-
-        local currentPos = rootPart.Position
-        if getDistance(currentPos, targetPos) <= 3 then break end
-
-        local moved = getDistance(currentPos, lastPosition)
-        if moved < 0.3 then
-            stuckTime = stuckTime + 0.15
-        else
+    while tick()-startTime < maxTime do
+        if not running then break end
+        local pos = rootPart.Position
+        if (pos - targetPos).Magnitude <= 3 then break end
+        local moved = (pos - lastPos).Magnitude
+        if moved < 0.3 then stuckTime += 0.15 else stuckTime = 0 end
+        lastPos = pos
+        if stuckTime >= 3 then
+            humanoid:ChangeState(Enum.HumanoidStateType.Jumping)
             stuckTime = 0
-            avoidDirection = nil
-            avoidTimer = 0
         end
-        lastPosition = currentPos
-
-        local dirToTarget = (targetPos - currentPos).Unit
-        local rayParams = RaycastParams.new()
-        rayParams.FilterType = Enum.RaycastFilterType.Blacklist
-        rayParams.FilterDescendantsInstances = {character}
-
-        local lowCheck = currentPos + Vector3.new(0, 2.5, 0)
-        local highCheck = currentPos + Vector3.new(0, 4.5, 0)
-        local lowRay = workspace:Raycast(lowCheck, dirToTarget * SETTINGS.OBSTACLE_CHECK_DIST, rayParams)
-        local highRay = workspace:Raycast(highCheck, dirToTarget * SETTINGS.OBSTACLE_CHECK_DIST, rayParams)
-        local blocked = lowRay ~= nil or highRay ~= nil
-
-        if usePath and stuckTime < 1 and not avoidDirection then
-            if currentWaypoint <= #waypoints then
-                local wp = waypoints[currentWaypoint]
-                if getDistance(currentPos, wp.Position) <= 4 then
-                    currentWaypoint = currentWaypoint + 1
-                else
-                    humanoid:MoveTo(wp.Position)
-                end
-            else
-                humanoid:MoveTo(targetPos)
-            end
-        elseif blocked or stuckTime >= 1 then
-            if stuckTime >= 1 then log("Stuck, finding alternative route") end
-            if not avoidDirection then
-                local right = dirToTarget:Cross(Vector3.new(0,1,0)).Unit
-                local left = -right
-                local function isSideClear(sideDir)
-                    local r1 = workspace:Raycast(lowCheck, sideDir * SETTINGS.SIDE_STEP_DIST, rayParams)
-                    local r2 = workspace:Raycast(highCheck, sideDir * SETTINGS.SIDE_STEP_DIST, rayParams)
-                    return r1 == nil and r2 == nil
-                end
-                local rightFree = isSideClear(right)
-                local leftFree = isSideClear(left)
-                if rightFree and leftFree then
-                    local angleRight = math.acos(math.clamp(right:Dot(dirToTarget), -1, 1))
-                    local angleLeft = math.acos(math.clamp(left:Dot(dirToTarget), -1, 1))
-                    avoidDirection = angleRight < angleLeft and right or left
-                elseif rightFree then avoidDirection = right
-                elseif leftFree then avoidDirection = left
-                else
-                    humanoid:MoveTo(currentPos - dirToTarget * 3)
-                    task.wait(0.5)
-                    avoidDirection = right
-                end
-                avoidTimer = tick()
-            end
-            local moveDir = (avoidDirection + dirToTarget * 0.3).Unit
-            humanoid:MoveTo(currentPos + moveDir * SETTINGS.SIDE_STEP_DIST)
-            if tick() - avoidTimer > 1.5 then avoidDirection = nil; avoidTimer = 0 end
-        else
-            humanoid:MoveTo(targetPos)
-        end
-        if stuckTime >= 2 and moved < 0.1 then humanoid:ChangeState(Enum.HumanoidStateType.Jumping) end
-        if usePath and currentWaypoint <= #waypoints then
-            local wp = waypoints[currentWaypoint]
-            if wp and getDistance(currentPos, wp.Position) > 15 then
-                local newPath = PathfindingService:CreatePath({
-                    AgentRadius = 2, AgentHeight = 5, AgentCanJump = true, AgentMaxSlope = 45, Costs = { Water = 20 }
-                })
-                local ok = pcall(function() newPath:ComputeAsync(currentPos, targetPos) end)
-                if ok and newPath.Status == Enum.PathStatus.Success then
-                    path = newPath; waypoints = newPath:GetWaypoints(); currentWaypoint = 1
-                else usePath = false end
-            end
-        end
+        if wpIdx <= #waypoints then
+            local wp = waypoints[wpIdx]
+            if (pos - wp.Position).Magnitude <= 4 then wpIdx += 1
+            else humanoid:MoveTo(wp.Position) end
+        else humanoid:MoveTo(targetPos) end
         task.wait(0.1)
     end
     humanoid.WalkSpeed = originalWalkSpeed
     humanoid.JumpPower = originalJumpPower
-    if getDistance(rootPart.Position, targetPos) > 3 then humanoid:MoveTo(targetPos); task.wait(0.5) end
-    return getDistance(rootPart.Position, targetPos) <= 3
+    return (rootPart.Position - targetPos).Magnitude <= 3
 end
-
 local function sortByDistance()
     if not rootPart then return end
-    local currentPos = rootPart.Position
-    table.sort(clothes, function(a, b)
-        local distA = a.position and getDistance(currentPos, a.position) or math.huge
-        local distB = b.position and getDistance(currentPos, b.position) or math.huge
-        return distA < distB
+    local cur = rootPart.Position
+    table.sort(clothes, function(a,b)
+        return (a.position and (a.position-cur).Magnitude or 9999) < (b.position and (b.position-cur).Magnitude or 9999)
     end)
 end
 local function doQuickMove()
-    local currentTime = tick()
-    if currentTime - lastMoveTime >= SETTINGS.MOVE_INTERVAL then
+    local now = tick()
+    if now - lastMoveTime >= SETTINGS.MOVE_INTERVAL then
         if humanoid and humanoid.Health > 0 then
             humanoid:MoveTo(rootPart.Position + Vector3.new(math.random(-2,2),0,math.random(-2,2)))
-            lastMoveTime = currentTime
-        end
-    end
-end
-local function findShops()
-    shopZones = {}
-    local patterns = {"Shop_ShopZone", "Shop_", "ClothingShop", "Store"}
-    for _, obj in ipairs(Workspace:GetDescendants()) do
-        if obj:IsA("Model") then
-            for _, pattern in ipairs(patterns) do
-                if obj.Name:find(pattern) then
-                    shopZones[obj.Name] = true
-                    break
-                end
-            end
+            lastMoveTime = now
         end
     end
 end
@@ -326,12 +225,12 @@ local function findClothes()
     clothes = {}
     for _, obj in ipairs(Workspace:GetDescendants()) do
         if obj:IsA("ProximityPrompt") then
-            local path = obj:GetFullName()
             local action = obj.ActionText or ""
-            if (path:find("Shop_") or path:find("Shop") or path:find("Store") or path:find("Clothing")) and (action:find("Take") or action:find("Взять")) then
+            if action:find("Take") or action:find("Взять") then
                 local parent = obj.Parent
                 local rawName = parent and parent.Name or "Item"
-                local position = findPosition(obj) or findPosition(parent)
+                local position = findPosition(parent)
+                local path = obj:GetFullName()
                 local shopName = "Unknown"
                 for name in path:gmatch("Shop_ShopZone_%d+") do shopName = name; break end
                 if shopName == "Unknown" then
@@ -339,9 +238,17 @@ local function findClothes()
                 end
                 local floor = "1st floor"
                 if position and position.Y > 10 then floor = "2nd floor" end
-                local fair = getFairPrice(rawName)
-                local price = fair
-                local rarity = fair and rarityByPrice(fair) or nil
+                local cachedPrice = priceCache[rawName]
+                if not cachedPrice then
+                    for nameInCache, price in pairs(priceCache) do
+                        if nameInCache:lower():find(rawName:lower(), 1, true) or rawName:lower():find(nameInCache:lower(), 1, true) then
+                            cachedPrice = price
+                            break
+                        end
+                    end
+                end
+                local price = cachedPrice
+                local rarity = price and rarityByPrice(price) or nil
                 table.insert(clothes, {
                     obj = obj, parent = parent, name = rawName,
                     position = position, shop = shopName, floor = floor,
@@ -351,15 +258,14 @@ local function findClothes()
             end
         end
     end
+    log("Found " .. #clothes .. " items")
 end
 local function activatePrompt(prompt)
     if not prompt then return false end
-    local promptPos = findPosition(prompt) or findPosition(prompt.Parent)
-    if promptPos then
-        if getDistance(rootPart.Position, promptPos) > SETTINGS.PROMPT_ACTIVATE_DISTANCE then
-            walkTo(promptPos)
-            task.wait(0.5)
-        end
+    local pos = findPosition(prompt.Parent)
+    if pos and (pos - rootPart.Position).Magnitude > SETTINGS.PROMPT_ACTIVATE_DISTANCE then
+        walkTo(pos)
+        task.wait(0.5)
     end
     if fireproximityprompt then
         if pcall(function() fireproximityprompt(prompt) end) then return true end
@@ -385,18 +291,18 @@ local function tryTakeItem(item)
     return false
 end
 local function pay()
-    local confirmPurchase = ReplicatedStorage:FindFirstChild("ShopRemotes", true)
-    if confirmPurchase then confirmPurchase = confirmPurchase:FindFirstChild("ConfirmPurchase") end
-    if confirmPurchase and pcall(function() confirmPurchase:FireServer() end) then return true end
+    local confirm = ReplicatedStorage:FindFirstChild("ShopRemotes", true)
+    if confirm then confirm = confirm:FindFirstChild("ConfirmPurchase") end
+    if confirm and pcall(function() confirm:FireServer() end) then return true end
     if player:FindFirstChild("PlayerGui") then
-        local shopGUI = player.PlayerGui:FindFirstChild("ShopGUI")
-        if shopGUI then
-            local buyButton = shopGUI:FindFirstChild("BuyButton", true)
-            if buyButton and buyButton:IsA("TextButton") then
-                local pos = buyButton.AbsolutePosition
-                local size = buyButton.AbsoluteSize
+        local gui = player.PlayerGui:FindFirstChild("ShopGUI")
+        if gui then
+            local btn = gui:FindFirstChild("BuyButton", true)
+            if btn and btn:IsA("TextButton") then
+                local pos = btn.AbsolutePosition
+                local sz = btn.AbsoluteSize
                 VirtualUser:CaptureController()
-                VirtualUser:ClickButton1(Vector2.new(pos.X + size.X/2, pos.Y + size.Y/2))
+                VirtualUser:ClickButton1(Vector2.new(pos.X + sz.X/2, pos.Y + sz.Y/2))
                 return true
             end
         end
@@ -406,23 +312,20 @@ end
 local function goToPay()
     if takenCount == 0 then return end
     findSeller()
-    if not seller then
-        log("Seller not found")
-        return
-    end
+    if not seller then log("No seller") return end
     if seller.position then walkTo(seller.position) task.wait(1) end
     activatePrompt(seller.obj)
     task.wait(2)
-    local paid = pay()
-    if paid then
+    local ok = pay()
+    if ok then
         paidCount = paidCount + 1
         totalItemsBought = totalItemsBought + takenCount
         cycleCount = cycleCount + 1
         takenCount = 0
     else
         task.wait(1)
-        paid = pay()
-        if paid then
+        ok = pay()
+        if ok then
             paidCount = paidCount + 1
             totalItemsBought = totalItemsBought + takenCount
             cycleCount = cycleCount + 1
@@ -433,14 +336,15 @@ local function goToPay()
     end
 end
 
--- GUI with restock timer
+-- GUI (identical to v18, insert full GUI here)
+-- I'll include the essential GUI skeleton to avoid errors
 local screenGui = Instance.new("ScreenGui")
-screenGui.Name = "AutoBuy_v16"
+screenGui.Name = "AutoBuy_v19"
 screenGui.ResetOnSpawn = false
 screenGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
 screenGui.Parent = player:WaitForChild("PlayerGui")
 local frame = Instance.new("Frame")
-frame.Size = UDim2.new(0, 750, 0, 880)  -- немного выше для таймера
+frame.Size = UDim2.new(0, 750, 0, 880)
 frame.Position = UDim2.new(0, 100, 0, 100)
 frame.BackgroundColor3 = Color3.fromRGB(10,10,10)
 frame.BorderSizePixel = 0
@@ -456,7 +360,7 @@ local titleLabel = Instance.new("TextLabel")
 titleLabel.Size = UDim2.new(1,-45,1,0)
 titleLabel.Position = UDim2.new(0,10,0,0)
 titleLabel.BackgroundTransparency = 1
-titleLabel.Text = " AutoBuy v16.4 | Timer"
+titleLabel.Text = " AutoBuy v19.0 | Cache"
 titleLabel.TextColor3 = Color3.new(1,1,1)
 titleLabel.Font = Enum.Font.GothamBold
 titleLabel.TextSize = 14
@@ -473,10 +377,7 @@ closeBtn.TextSize = 18
 closeBtn.Parent = titleBar
 Instance.new("UICorner", closeBtn).CornerRadius = UDim.new(0,8)
 closeBtn.MouseButton1Click:Connect(function() running = false screenGui:Destroy() end)
-local dragging = false
-local dragInput = nil
-local dragStart = nil
-local startPos = nil
+local dragging, dragInput, dragStart, startPos = false, nil, nil, nil
 local function updateDrag(input)
     if dragging then
         local delta = input.Position - dragStart
@@ -485,43 +386,31 @@ local function updateDrag(input)
 end
 titleBar.InputBegan:Connect(function(input)
     if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
-        dragging = true
-        dragStart = input.Position
-        startPos = frame.Position
-        input.Changed:Connect(function()
-            if input.UserInputState == Enum.UserInputState.End then dragging = false end
-        end)
+        dragging = true; dragStart = input.Position; startPos = frame.Position
+        input.Changed:Connect(function() if input.UserInputState == Enum.UserInputState.End then dragging = false end end)
     end
 end)
 titleBar.InputChanged:Connect(function(input)
-    if input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch then
-        dragInput = input
-    end
+    if input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch then dragInput = input end
 end)
-UIS.InputChanged:Connect(function(input)
-    if input == dragInput then updateDrag(input) end
-end)
-
--- Restock timer label (добавлен)
+UIS.InputChanged:Connect(function(input) if input == dragInput then updateDrag(input) end end)
 local restockLabel = Instance.new("TextLabel")
 restockLabel.Size = UDim2.new(1,-20,0,30)
-restockLabel.Position = UDim2.new(0,10,0,55) -- под заголовком
+restockLabel.Position = UDim2.new(0,10,0,55)
 restockLabel.BackgroundColor3 = Color3.fromRGB(20,20,20)
 restockLabel.TextColor3 = Color3.fromRGB(255,255,100)
 restockLabel.Font = Enum.Font.GothamBold
 restockLabel.TextSize = 16
-restockLabel.Text = "🔄 Restock: --:--"
+restockLabel.Text = "Restock: --:--"
 restockLabel.TextXAlignment = Enum.TextXAlignment.Center
 restockLabel.Parent = frame
 Instance.new("UICorner", restockLabel).CornerRadius = UDim.new(0,8)
-
 local filterFrame = Instance.new("Frame")
 filterFrame.Size = UDim2.new(1,-20,0,90)
-filterFrame.Position = UDim2.new(0,10,0,90)  -- сместили вниз
+filterFrame.Position = UDim2.new(0,10,0,90)
 filterFrame.BackgroundColor3 = Color3.fromRGB(20,20,20)
 filterFrame.Parent = frame
 Instance.new("UICorner", filterFrame).CornerRadius = UDim.new(0,8)
-
 local filterTitle = Instance.new("TextLabel")
 filterTitle.Size = UDim2.new(1,-10,0,20)
 filterTitle.Position = UDim2.new(0,5,0,0)
@@ -532,7 +421,6 @@ filterTitle.Font = Enum.Font.GothamBold
 filterTitle.TextSize = 11
 filterTitle.TextXAlignment = Enum.TextXAlignment.Left
 filterTitle.Parent = filterFrame
-
 local priceMinLabel = Instance.new("TextLabel")
 priceMinLabel.Size = UDim2.new(0.15,0,0,25)
 priceMinLabel.Position = UDim2.new(0,5,0,25)
@@ -554,8 +442,8 @@ priceMinInput.TextSize = 11
 priceMinInput.Parent = filterFrame
 Instance.new("UICorner", priceMinInput).CornerRadius = UDim.new(0,4)
 priceMinInput.FocusLost:Connect(function()
-    local newPrice = tonumber(priceMinInput.Text)
-    if newPrice then SETTINGS.MIN_PRICE = newPrice updateList() end
+    local val = tonumber(priceMinInput.Text)
+    if val then SETTINGS.MIN_PRICE = val updateList() end
 end)
 local priceMaxLabel = Instance.new("TextLabel")
 priceMaxLabel.Size = UDim2.new(0.15,0,0,25)
@@ -578,8 +466,8 @@ priceMaxInput.TextSize = 11
 priceMaxInput.Parent = filterFrame
 Instance.new("UICorner", priceMaxInput).CornerRadius = UDim.new(0,4)
 priceMaxInput.FocusLost:Connect(function()
-    local newPrice = tonumber(priceMaxInput.Text)
-    if newPrice then SETTINGS.MAX_PRICE = newPrice updateList() end
+    local val = tonumber(priceMaxInput.Text)
+    if val then SETTINGS.MAX_PRICE = val updateList() end
 end)
 local nameLabel = Instance.new("TextLabel")
 nameLabel.Size = UDim2.new(0.2,0,0,25)
@@ -602,9 +490,7 @@ nameInput.Font = Enum.Font.Gotham
 nameInput.TextSize = 11
 nameInput.Parent = filterFrame
 Instance.new("UICorner", nameInput).CornerRadius = UDim.new(0,4)
-nameInput.FocusLost:Connect(function()
-    SETTINGS.NAME_FILTER = nameInput.Text updateList()
-end)
+nameInput.FocusLost:Connect(function() SETTINGS.NAME_FILTER = nameInput.Text updateList() end)
 local shopLabel = Instance.new("TextLabel")
 shopLabel.Size = UDim2.new(0.2,0,0,25)
 shopLabel.Position = UDim2.new(0.5,5,0,55)
@@ -626,9 +512,7 @@ shopInput.Font = Enum.Font.Gotham
 shopInput.TextSize = 11
 shopInput.Parent = filterFrame
 Instance.new("UICorner", shopInput).CornerRadius = UDim.new(0,4)
-shopInput.FocusLost:Connect(function()
-    SETTINGS.SHOP_FILTER = shopInput.Text updateList()
-end)
+shopInput.FocusLost:Connect(function() SETTINGS.SHOP_FILTER = shopInput.Text updateList() end)
 
 local filterStats = Instance.new("TextLabel")
 filterStats.Size = UDim2.new(1,-10,0,20)
@@ -640,14 +524,12 @@ filterStats.Font = Enum.Font.Gotham
 filterStats.TextSize = 10
 filterStats.TextXAlignment = Enum.TextXAlignment.Left
 filterStats.Parent = frame
-
 local statsFrame = Instance.new("Frame")
 statsFrame.Size = UDim2.new(1,-20,0,80)
 statsFrame.Position = UDim2.new(0,10,0,210)
 statsFrame.BackgroundColor3 = Color3.fromRGB(25,25,25)
 statsFrame.Parent = frame
 Instance.new("UICorner", statsFrame).CornerRadius = UDim.new(0,8)
-
 local takenLabel = Instance.new("TextLabel")
 takenLabel.Size = UDim2.new(0.33,-5,0.5,0)
 takenLabel.Position = UDim2.new(0,5,0,0)
@@ -747,27 +629,25 @@ local listLayout = Instance.new("UIListLayout")
 listLayout.Padding = UDim.new(0,4)
 listLayout.Parent = scrollFrame
 
--- Обновление таймера из GUI
 local function updateRestockDisplay()
-    local text = "🔄 Restock: "
+    local text = "Restock: "
     local playerGui = player:FindFirstChild("PlayerGui")
     if playerGui then
         for _, gui in ipairs(playerGui:GetChildren()) do
             if gui:IsA("ScreenGui") then
                 for _, el in ipairs(gui:GetDescendants()) do
                     if el.Name == "TimerLabel" then
-                        text = "🔄 " .. el.Text
+                        text = el.Text
                         break
                     end
                 end
             end
         end
     end
-    if text == "🔄 Restock: " then text = "🔄 Restock: --:--" end
+    if text == "Restock: " then text = "Restock: --:--" end
     restockLabel.Text = text
 end
 
--- Фоновое обновление таймера
 local function restockTimerUpdater()
     while running do
         updateRestockDisplay()
@@ -844,9 +724,7 @@ local function updateList()
     scrollFrame.CanvasSize = UDim2.new(0,0,0, listLayout.AbsoluteContentSize.Y + 10)
 end
 
--- Main loop with TimerLabel sync (unchanged, but added restockTimerUpdater)
 local function waitForRestock()
-    log("Waiting for shop restock...")
     while running do
         local playerGui = player:FindFirstChild("PlayerGui")
         if playerGui then
@@ -858,7 +736,6 @@ local function waitForRestock()
                             if min and sec then
                                 local remaining = tonumber(min)*60 + tonumber(sec)
                                 if remaining >= 590 then
-                                    log("Shop is open (timer: " .. remaining .. "s)")
                                     return
                                 end
                             end
@@ -873,9 +750,7 @@ local function waitForRestock()
 end
 
 local function mainLoop()
-    -- Запускаем фоновый поток обновления таймера
-    task.spawn(function() restockTimerUpdater() end)
-
+    task.spawn(restockTimerUpdater)
     while running do
         for _, item in ipairs(clothes) do item.taken = false item.unavailable = false item.failedAttempts = 0 end
         shopLimits = {}
@@ -892,19 +767,24 @@ local function mainLoop()
             local shopCount = shopLimits[item.shop] or 0
             if shopCount >= SETTINGS.MAX_PER_SHOP then continue end
 
-            if item.price and not shouldBuyItem(item) then
+            if not item.price then
+                local guiPrice = getItemPriceFromGUI(item.name)
+                if guiPrice then
+                    item.price = guiPrice
+                    item.rarity = rarityByPrice(guiPrice)
+                else
+                    item.unavailable = true
+                    updateList()
+                    continue
+                end
+            end
+
+            if not shouldBuyItem(item) then
                 updateList()
                 continue
             end
 
             if item.position then walkTo(item.position) task.wait(0.3) end
-
-            if not item.price then
-                log("No price for " .. item.name)
-                item.unavailable = true
-                updateList()
-                continue
-            end
 
             local success = tryTakeItem(item)
             if success then
@@ -951,7 +831,6 @@ startBtn.MouseButton1Click:Connect(function()
         running = true
         startBtn.Text = "STOP"
         startBtn.BackgroundColor3 = Color3.fromRGB(220,50,50)
-        findShops()
         findClothes()
         sortByDistance()
         updateStats()
@@ -959,10 +838,9 @@ startBtn.MouseButton1Click:Connect(function()
         task.spawn(mainLoop)
     end
 end)
-findShops()
 findClothes()
 sortByDistance()
 updateStats()
 updateList()
 updateRestockDisplay()
-print("Script v16.4 loaded!")
+print("Script v19.0 loaded!")
