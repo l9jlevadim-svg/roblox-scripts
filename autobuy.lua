@@ -1,4 +1,4 @@
--- AUTOBUY v15.0
+-- v15.0 autobuy
 -- Pathfinding + price filter + 2 retries
 -- ============================================
 local Workspace = game:GetService("Workspace")
