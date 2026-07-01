@@ -1,5 +1,5 @@
 local u1 = {
-    RARITIES = {
+  RARITIES = {
         Common = {
             displayName = "Common",
             color = Color3.fromRGB(180, 180, 180)
