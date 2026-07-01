@@ -1,4 +1,4 @@
--- v23.1_final: точная цена через slotRef, фильтры работают сразу
+-- v23.2_fixed: строковый ключ priceCache (slotPath)
 local Workspace = game:GetService("Workspace")
 local Players = game:GetService("Players")
 local VirtualUser = game:GetService("VirtualUser")
@@ -10,11 +10,11 @@ local character = player.Character or player.CharacterAdded:Wait()
 local humanoid = character:WaitForChild("Humanoid")
 local rootPart = character:WaitForChild("HumanoidRootPart")
 print("\n" .. string.rep("=", 80))
-print("AUTOBUY v23.1_final")
+print("AUTOBUY v23.2_fixed")
 print(string.rep("=", 80) .. "\n")
 local SETTINGS = {
     MAX_PER_SHOP = 15,
-    MAX_TOTAL = 15,          -- обновляется через GUI
+    MAX_TOTAL = 15,
     SUCCESS_DELAY = 4,
     FAIL_DELAY = 1,
     MOVE_INTERVAL = 2,
@@ -64,7 +64,7 @@ local totalItemsBought = 0
 local totalMoneySpent = 0
 local cycleCount = 0
 
--- Кэш цен: ключ – объект слота (Part)
+-- Кэш цен: ключ – строка (полный путь слота)
 local priceCache = {}
 local ShopRemotes = ReplicatedStorage:FindFirstChild("ShopRemotes")
 local SlotPriceReveal = ShopRemotes and ShopRemotes:FindFirstChild("SlotPriceReveal")
@@ -74,20 +74,22 @@ if SlotPriceReveal then
             for _, item in ipairs(payload) do
                 local ref = item.slotRef
                 if typeof(ref) == "Instance" and ref:IsA("BasePart") then
-                    priceCache[ref] = {
+                    local slotPath = ref:GetFullName()
+                    priceCache[slotPath] = {
                         name = tostring(item.name),
                         price = tonumber(item.price)
                     }
+                    print("[Cache] " .. slotPath .. " = " .. tostring(item.name) .. " $" .. tostring(item.price))
                 end
             end
         end
     end)
-    print("SlotPriceReveal connected (slot ref)")
+    print("SlotPriceReveal connected (string key)")
 else
     print("SlotPriceReveal not found, will use GUI fallback")
 end
 
--- ========== КАРТА МАГАЗИНОВ ==========
+-- ========== КАРТА МАГАЗИНОВ (без изменений) ==========
 local function buildRoute()
     local shops = {}
     for _, obj in ipairs(Workspace:GetDescendants()) do
@@ -175,7 +177,7 @@ local function cartSyncUpdater()
     end
 end
 
--- ========== УМНЫЙ ОБХОД ВЕШАЛОК ==========
+-- ========== УМНЫЙ ОБХОД (без изменений) ==========
 local function walkTo(targetPos)
     if not targetPos or not humanoid or not rootPart then return false end
     local startPos = rootPart.Position
@@ -265,7 +267,7 @@ local function walkTo(targetPos)
     return (rootPart.Position - targetPos).Magnitude <= 3
 end
 
--- ========== ОСНОВНЫЕ ФУНКЦИИ ==========
+-- ========== ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ==========
 local function log(msg) print("[AutoBuy] " .. msg) end
 local function formatNumber(num)
     if num >= 1000000 then return string.format("%.1fM", num / 1000000)
@@ -333,7 +335,7 @@ local function findSeller()
     return nil
 end
 
--- ========== ПОИСК ОДЕЖДЫ С ТОЧНОЙ ПРИВЯЗКОЙ ЦЕНЫ ==========
+-- ========== ПОИСК ОДЕЖДЫ (ИСПРАВЛЕН) ==========
 local function findClothes()
     clothes = {}
     for _, obj in ipairs(Workspace:GetDescendants()) do
@@ -352,12 +354,13 @@ local function findClothes()
                 local floor = "1st floor"
                 if position and position.Y > 10 then floor = "2nd floor" end
 
-                -- Находим родительский Part (слот)
+                -- Находим родительский Part (слот) и его полный путь
                 local slotPart = parent
                 while slotPart and not slotPart:IsA("BasePart") do slotPart = slotPart.Parent end
+                local slotPath = slotPart and slotPart:GetFullName()
 
-                -- Кэш по объекту слота (не по имени)
-                local cached = slotPart and priceCache[slotPart]
+                -- Ищем цену в кэше по строковому пути
+                local cached = slotPath and priceCache[slotPath]
                 local price = cached and cached.price
                 local displayName = cached and cached.name or rawName
                 local rarity = price and rarityByPrice(price) or nil
@@ -371,7 +374,7 @@ local function findClothes()
             end
         end
     end
-    log("Found " .. #clothes .. " items")
+    log("Found " .. #clothes .. " items (priced: " .. (next(priceCache) and "yes" or "no") .. ")")
 end
 local function sortByShopOrder(items)
     local shopOrder = {}
@@ -506,7 +509,7 @@ local function waitForRestock()
     end
 end
 
--- ========== ГЛАВНЫЙ ЦИКЛ ==========
+-- ========== ГЛАВНЫЙ ЦИКЛ (как в v23.1) ==========
 local function mainLoop()
     task.spawn(cartSyncUpdater)
     while running do
@@ -624,7 +627,7 @@ local function mainLoop()
     end
 end
 
--- ========== GUI (идентичен v23, но без лишнего) ==========
+-- ========== GUI (как в v23.1) ==========
 local screenGui = Instance.new("ScreenGui")
 screenGui.Name = "AutoBuy_v23"
 screenGui.ResetOnSpawn = false
@@ -647,7 +650,7 @@ local titleLabel = Instance.new("TextLabel")
 titleLabel.Size = UDim2.new(1,-45,1,0)
 titleLabel.Position = UDim2.new(0,10,0,0)
 titleLabel.BackgroundTransparency = 1
-titleLabel.Text = " AutoBuy v23.1 | Final"
+titleLabel.Text = " AutoBuy v23.2 | Fixed"
 titleLabel.TextColor3 = Color3.new(1,1,1)
 titleLabel.Font = Enum.Font.GothamBold
 titleLabel.TextSize = 14
@@ -1011,4 +1014,4 @@ sortByShopOrder(clothes)
 updateStats()
 updateList()
 restockLabel.Text = updateRestockDisplay()
-print("Script v23.1_final loaded!")
+print("Script v23.2_fixed loaded!")
