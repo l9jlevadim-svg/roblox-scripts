@@ -1,4 +1,4 @@
--- v21.0 SlotPriceReveal slot-based cache + GUI fallback
+-- v22.0 ROUTE INTEGRATION
 local Workspace = game:GetService("Workspace")
 local Players = game:GetService("Players")
 local VirtualUser = game:GetService("VirtualUser")
@@ -10,7 +10,7 @@ local character = player.Character or player.CharacterAdded:Wait()
 local humanoid = character:WaitForChild("Humanoid")
 local rootPart = character:WaitForChild("HumanoidRootPart")
 print("\n" .. string.rep("=", 80))
-print("AUTOBUY v21.0")
+print("AUTOBUY v22.0")
 print(string.rep("=", 80) .. "\n")
 local SETTINGS = {
     MAX_PER_SHOP = 15,
@@ -63,7 +63,7 @@ local lastMoveTime = 0
 local totalItemsBought = 0
 local totalMoneySpent = 0
 local cycleCount = 0
-local priceCache = {}  -- ключ: полный путь слота, значение: таблица {name=..., price=...}
+local priceCache = {}
 local ShopRemotes = ReplicatedStorage:FindFirstChild("ShopRemotes")
 local SlotPriceReveal = ShopRemotes and ShopRemotes:FindFirstChild("SlotPriceReveal")
 if SlotPriceReveal then
@@ -72,8 +72,7 @@ if SlotPriceReveal then
             for _, item in ipairs(payload) do
                 local ref = item.slotRef
                 if ref and ref:IsA("Instance") then
-                    local slotPath = ref:GetFullName()
-                    priceCache[slotPath] = {
+                    priceCache[ref:GetFullName()] = {
                         name = tostring(item.name),
                         price = tonumber(item.price)
                     }
@@ -81,10 +80,24 @@ if SlotPriceReveal then
             end
         end
     end)
-    print("Connected to SlotPriceReveal (cache by slot)")
+    print("SlotPriceReveal connected")
 else
-    print("SlotPriceReveal not found, will rely on GUI")
+    print("SlotPriceReveal not found")
 end
+
+-- Загрузка маршрута из глобальной переменной
+local route = _G.bestRoute
+if not route then
+    print("Route not found, running cartographer...")
+    loadstring(game:HttpGet("https://raw.githubusercontent.com/..."))() -- здесь нужен URL картографа, но проще вставить его код прямо сюда или попросить пользователя запустить картографа вручную перед основным скриптом.
+    -- Поскольку URL у нас нет, я просто жду 5 секунд и проверяю ещё раз
+    task.wait(5)
+    route = _G.bestRoute
+    if not route then
+        error("Route still not found. Run cartographer first!")
+    end
+end
+print("Route loaded: " .. #route .. " shops")
 
 local function log(msg)
     print("[AutoBuy] " .. msg)
@@ -206,11 +219,14 @@ local function walkTo(targetPos)
     humanoid.JumpPower = originalJumpPower
     return (rootPart.Position - targetPos).Magnitude <= 3
 end
-local function sortByDistance()
-    if not rootPart then return end
-    local cur = rootPart.Position
-    table.sort(clothes, function(a,b)
-        return (a.position and (a.position-cur).Magnitude or 9999) < (b.position and (b.position-cur).Magnitude or 9999)
+local function sortByShopOrder(items)
+    -- сортируем предметы по порядку магазинов в route
+    local shopOrder = {}
+    for i, shop in ipairs(route) do
+        shopOrder[shop.name] = i
+    end
+    table.sort(items, function(a, b)
+        return (shopOrder[a.shop] or 999) < (shopOrder[b.shop] or 999)
     end)
 end
 local function doQuickMove()
@@ -239,15 +255,17 @@ local function findClothes()
                 end
                 local floor = "1st floor"
                 if position and position.Y > 10 then floor = "2nd floor" end
-                -- Ищем родительский Part (слот) и его полный путь для кэша
+
                 local slotPart = parent
                 while slotPart and not slotPart:IsA("BasePart") do slotPart = slotPart.Parent end
                 local slotPath = slotPart and slotPart:GetFullName()
                 local cached = slotPath and priceCache[slotPath]
                 local price = cached and cached.price
+                local displayName = cached and cached.name or rawName
                 local rarity = price and rarityByPrice(price) or nil
+
                 table.insert(clothes, {
-                    obj = obj, parent = parent, name = rawName,
+                    obj = obj, parent = parent, name = displayName,
                     position = position, shop = shopName, floor = floor,
                     taken = false, unavailable = false, failedAttempts = 0,
                     rarity = rarity, price = price, slotRef = parent
@@ -332,10 +350,9 @@ local function goToPay()
         end
     end
 end
-
--- GUI (тот же, что в v18, с таймером рестока)
+-- GUI (аналогичен v21.1)
 local screenGui = Instance.new("ScreenGui")
-screenGui.Name = "AutoBuy_v21"
+screenGui.Name = "AutoBuy_v22"
 screenGui.ResetOnSpawn = false
 screenGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
 screenGui.Parent = player:WaitForChild("PlayerGui")
@@ -356,7 +373,7 @@ local titleLabel = Instance.new("TextLabel")
 titleLabel.Size = UDim2.new(1,-45,1,0)
 titleLabel.Position = UDim2.new(0,10,0,0)
 titleLabel.BackgroundTransparency = 1
-titleLabel.Text = " AutoBuy v21.0 | Slot cache"
+titleLabel.Text = " AutoBuy v22.0 | Route"
 titleLabel.TextColor3 = Color3.new(1,1,1)
 titleLabel.Font = Enum.Font.GothamBold
 titleLabel.TextSize = 14
@@ -745,82 +762,147 @@ local function waitForRestock()
     end
 end
 
+local function ensureCacheFilled()
+    if next(priceCache) then return true end
+    log("Price cache empty, trying to get data...")
+    if #clothes > 0 then
+        local nearestItem = clothes[1]
+        if nearestItem.position then
+            walkTo(nearestItem.position)
+            task.wait(2)
+            if next(priceCache) then
+                log("Cache filled after walking to nearest item")
+                return true
+            end
+        end
+    end
+    local waited = 0
+    while waited < 3 do
+        task.wait(1)
+        waited = waited + 1
+        if next(priceCache) then return true end
+    end
+    log("Could not fill cache, will rely on GUI")
+    return false
+end
+
+-- Основной цикл с обходом магазинов по маршруту
 local function mainLoop()
     task.spawn(restockTimerUpdater)
     while running do
+        -- Сброс предметов
         for _, item in ipairs(clothes) do item.taken = false item.unavailable = false item.failedAttempts = 0 end
         shopLimits = {}
         takenCount = 0
         lastMoveTime = tick()
-        sortByDistance()
-        updateList()
-        addLog("New cycle")
-        local shouldPay = false
-        for _, item in ipairs(clothes) do
-            if not running then break end
-            if item.taken or item.unavailable then continue end
-            if takenCount >= SETTINGS.MAX_TOTAL then shouldPay = true break end
-            local shopCount = shopLimits[item.shop] or 0
-            if shopCount >= SETTINGS.MAX_PER_SHOP then continue end
 
-            if not item.price then
-                -- GUI fallback при подходе
-                if item.position then walkTo(item.position) task.wait(0.3) end
-                local guiPrice = getItemPriceFromGUI(item.name)
-                if guiPrice then
-                    item.price = guiPrice
-                    item.rarity = rarityByPrice(guiPrice)
-                else
-                    log("No price for " .. item.name)
-                    item.unavailable = true
+        -- Поиск всех предметов и кэширование цен
+        findClothes()
+        sortByShopOrder(clothes)  -- сортируем по порядку маршрута
+        updateList()
+
+        ensureCacheFilled()
+        if next(priceCache) then
+            findClothes()
+            sortByShopOrder(clothes)
+            updateList()
+        end
+
+        addLog("New cycle (route)")
+
+        local shouldPay = false
+        -- Внешний цикл по магазинам из route
+        for _, shop in ipairs(route) do
+            if not running then break end
+            log("=== Entering " .. shop.name .. " ===")
+            -- Перемещаемся к точке магазина (координаты из route)
+            walkTo(shop.position)
+            task.wait(1)
+
+            -- Внутри магазина обрабатываем все предметы этого магазина
+            local shopItems = {}
+            for _, item in ipairs(clothes) do
+                if item.shop == shop.name and not item.taken and not item.unavailable then
+                    table.insert(shopItems, item)
+                end
+            end
+            -- Сортируем по близости внутри магазина
+            local curPos = rootPart.Position
+            table.sort(shopItems, function(a, b)
+                local dA = a.position and (a.position - curPos).Magnitude or 9999
+                local dB = b.position and (b.position - curPos).Magnitude or 9999
+                return dA < dB
+            end)
+
+            for _, item in ipairs(shopItems) do
+                if not running then break end
+                if takenCount >= SETTINGS.MAX_TOTAL then shouldPay = true break end
+                if shopLimits[item.shop] and shopLimits[item.shop] >= SETTINGS.MAX_PER_SHOP then break end
+
+                -- Если цена не назначена (не было в кэше) – GUI fallback
+                if not item.price then
+                    if item.position then walkTo(item.position) task.wait(0.3) end
+                    local guiPrice = getItemPriceFromGUI(item.name)
+                    if guiPrice then
+                        item.price = guiPrice
+                        item.rarity = rarityByPrice(guiPrice)
+                    else
+                        log("No price for " .. item.name)
+                        item.unavailable = true
+                        updateList()
+                        continue
+                    end
+                end
+
+                if not shouldBuyItem(item) then
                     updateList()
                     continue
                 end
-            end
 
-            if not shouldBuyItem(item) then
-                updateList()
-                continue
-            end
-
-            if item.position and (rootPart.Position - item.position).Magnitude > 3 then
-                walkTo(item.position)
-                task.wait(0.3)
-            end
-
-            local success = tryTakeItem(item)
-            if success then
-                item.taken = true
-                takenCount = takenCount + 1
-                shopLimits[item.shop] = (shopLimits[item.shop] or 0) + 1
-                totalMoneySpent = totalMoneySpent + (item.price or 0)
-                updateStats()
-                updateList()
-                if takenCount >= SETTINGS.MAX_TOTAL then shouldPay = true break end
-                addLog("Success! Waiting " .. SETTINGS.SUCCESS_DELAY .. "s")
-                local waitStart = tick()
-                while tick() - waitStart < SETTINGS.SUCCESS_DELAY do
-                    if not running then break end
-                    doQuickMove()
-                    task.wait(0.5)
+                if item.position and (rootPart.Position - item.position).Magnitude > 3 then
+                    walkTo(item.position)
+                    task.wait(0.3)
                 end
-            else
-                addLog("Failed. Waiting " .. SETTINGS.FAIL_DELAY .. "s")
-                local waitStart = tick()
-                while tick() - waitStart < SETTINGS.FAIL_DELAY do
-                    if not running then break end
-                    doQuickMove()
-                    task.wait(0.5)
+
+                local success = tryTakeItem(item)
+                if success then
+                    item.taken = true
+                    takenCount = takenCount + 1
+                    shopLimits[item.shop] = (shopLimits[item.shop] or 0) + 1
+                    totalMoneySpent = totalMoneySpent + (item.price or 0)
+                    updateStats()
+                    updateList()
+                    if takenCount >= SETTINGS.MAX_TOTAL then shouldPay = true break end
+                    addLog("Success! Waiting " .. SETTINGS.SUCCESS_DELAY .. "s")
+                    local waitStart = tick()
+                    while tick() - waitStart < SETTINGS.SUCCESS_DELAY do
+                        if not running then break end
+                        doQuickMove()
+                        task.wait(0.5)
+                    end
+                else
+                    addLog("Failed. Waiting " .. SETTINGS.FAIL_DELAY .. "s")
+                    local waitStart = tick()
+                    while tick() - waitStart < SETTINGS.FAIL_DELAY do
+                        if not running then break end
+                        doQuickMove()
+                        task.wait(0.5)
+                    end
+                    updateList()
                 end
-                updateList()
             end
+            if shouldPay or takenCount >= SETTINGS.MAX_TOTAL then break end
         end
+
         if shouldPay or takenCount > 0 then
             goToPay()
-            if running then sortByDistance() updateList() end
+            if running then
+                findClothes()
+                sortByShopOrder(clothes)
+                updateList()
+            end
         end
         waitForRestock()
-        findClothes()
     end
 end
 
@@ -834,15 +916,17 @@ startBtn.MouseButton1Click:Connect(function()
         startBtn.Text = "STOP"
         startBtn.BackgroundColor3 = Color3.fromRGB(220,50,50)
         findClothes()
-        sortByDistance()
+        sortByShopOrder(clothes)
+        ensureCacheFilled()
+        if next(priceCache) then findClothes(); sortByShopOrder(clothes) end
         updateStats()
         updateList()
         task.spawn(mainLoop)
     end
 end)
 findClothes()
-sortByDistance()
+sortByShopOrder(clothes)
 updateStats()
 updateList()
 updateRestockDisplay()
-print("Script v21.0 loaded!")
+print("Script v22.0 loaded!")
