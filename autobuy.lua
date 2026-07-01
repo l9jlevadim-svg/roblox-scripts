@@ -1,4 +1,4 @@
--- v22.0 ROUTE INTEGRATION
+v22.1 route integrated, auto-cartographer
 local Workspace = game:GetService("Workspace")
 local Players = game:GetService("Players")
 local VirtualUser = game:GetService("VirtualUser")
@@ -10,7 +10,7 @@ local character = player.Character or player.CharacterAdded:Wait()
 local humanoid = character:WaitForChild("Humanoid")
 local rootPart = character:WaitForChild("HumanoidRootPart")
 print("\n" .. string.rep("=", 80))
-print("AUTOBUY v22.0")
+print("AUTOBUY v22.1")
 print(string.rep("=", 80) .. "\n")
 local SETTINGS = {
     MAX_PER_SHOP = 15,
@@ -85,16 +85,92 @@ else
     print("SlotPriceReveal not found")
 end
 
--- Загрузка маршрута из глобальной переменной
+-- Встроенный картограф (выполняется, если маршрута нет)
+local function buildRoute()
+    print("Building shop route...")
+    local shops = {}
+    for _, obj in ipairs(Workspace:GetDescendants()) do
+        if obj:IsA("Model") and obj.Name:match("^Shop_ShopZone_%d+$") then
+            local pos = nil
+            if obj.PrimaryPart then
+                pos = obj.PrimaryPart.Position
+            else
+                for _, part in ipairs(obj:GetChildren()) do
+                    if part:IsA("BasePart") then
+                        pos = part.Position
+                        break
+                    end
+                end
+            end
+            if pos then
+                table.insert(shops, {name = obj.Name, position = pos})
+            end
+        end
+    end
+    if #shops < 2 then return nil end
+    local n = #shops
+    local dist = {}
+    for i = 1, n do
+        dist[i] = {}
+        for j = 1, n do
+            if i == j then
+                dist[i][j] = 0
+            else
+                local path = PathfindingService:CreatePath({
+                    AgentRadius = 2, AgentHeight = 5, AgentCanJump = true, AgentMaxSlope = 45, Costs = { Water = 20 }
+                })
+                local success = pcall(function() path:ComputeAsync(shops[i].position, shops[j].position) end)
+                if success and path.Status == Enum.PathStatus.Success then
+                    local waypoints = path:GetWaypoints()
+                    local total = 0
+                    local prev = shops[i].position
+                    for _, wp in ipairs(waypoints) do
+                        total = total + (wp.Position - prev).Magnitude
+                        prev = wp.Position
+                    end
+                    dist[i][j] = total
+                else
+                    dist[i][j] = (shops[j].position - shops[i].position).Magnitude
+                end
+            end
+        end
+    end
+    local unvisited = {}
+    for i = 1, n do unvisited[i] = true end
+    local route = {}
+    local startIdx = 1
+    local minStartDist = math.huge
+    for i = 1, n do
+        local d = (shops[i].position - rootPart.Position).Magnitude
+        if d < minStartDist then minStartDist = d; startIdx = i end
+    end
+    table.insert(route, startIdx)
+    unvisited[startIdx] = nil
+    for _ = 2, n do
+        local bestIdx = nil
+        local bestDist = math.huge
+        for i in pairs(unvisited) do
+            local d = dist[route[#route]][i]
+            if d < bestDist then bestDist = d; bestIdx = i end
+        end
+        table.insert(route, bestIdx)
+        unvisited[bestIdx] = nil
+    end
+    local finalRoute = {}
+    for i, idx in ipairs(route) do
+        finalRoute[i] = {name = shops[idx].name, position = shops[idx].position}
+    end
+    _G.bestRoute = finalRoute
+    print("Route built: " .. #finalRoute .. " shops")
+    return finalRoute
+end
+
+-- Загрузка маршрута
 local route = _G.bestRoute
 if not route then
-    print("Route not found, running cartographer...")
-    loadstring(game:HttpGet("https://raw.githubusercontent.com/..."))() -- здесь нужен URL картографа, но проще вставить его код прямо сюда или попросить пользователя запустить картографа вручную перед основным скриптом.
-    -- Поскольку URL у нас нет, я просто жду 5 секунд и проверяю ещё раз
-    task.wait(5)
-    route = _G.bestRoute
+    route = buildRoute()
     if not route then
-        error("Route still not found. Run cartographer first!")
+        error("No shops found or route failed")
     end
 end
 print("Route loaded: " .. #route .. " shops")
@@ -220,7 +296,6 @@ local function walkTo(targetPos)
     return (rootPart.Position - targetPos).Magnitude <= 3
 end
 local function sortByShopOrder(items)
-    -- сортируем предметы по порядку магазинов в route
     local shopOrder = {}
     for i, shop in ipairs(route) do
         shopOrder[shop.name] = i
@@ -350,7 +425,7 @@ local function goToPay()
         end
     end
 end
--- GUI (аналогичен v21.1)
+-- GUI (same as before)
 local screenGui = Instance.new("ScreenGui")
 screenGui.Name = "AutoBuy_v22"
 screenGui.ResetOnSpawn = false
@@ -373,7 +448,7 @@ local titleLabel = Instance.new("TextLabel")
 titleLabel.Size = UDim2.new(1,-45,1,0)
 titleLabel.Position = UDim2.new(0,10,0,0)
 titleLabel.BackgroundTransparency = 1
-titleLabel.Text = " AutoBuy v22.0 | Route"
+titleLabel.Text = " AutoBuy v22.1 | Route"
 titleLabel.TextColor3 = Color3.new(1,1,1)
 titleLabel.Font = Enum.Font.GothamBold
 titleLabel.TextSize = 14
@@ -786,19 +861,16 @@ local function ensureCacheFilled()
     return false
 end
 
--- Основной цикл с обходом магазинов по маршруту
 local function mainLoop()
     task.spawn(restockTimerUpdater)
     while running do
-        -- Сброс предметов
         for _, item in ipairs(clothes) do item.taken = false item.unavailable = false item.failedAttempts = 0 end
         shopLimits = {}
         takenCount = 0
         lastMoveTime = tick()
 
-        -- Поиск всех предметов и кэширование цен
         findClothes()
-        sortByShopOrder(clothes)  -- сортируем по порядку маршрута
+        sortByShopOrder(clothes)
         updateList()
 
         ensureCacheFilled()
@@ -811,22 +883,18 @@ local function mainLoop()
         addLog("New cycle (route)")
 
         local shouldPay = false
-        -- Внешний цикл по магазинам из route
         for _, shop in ipairs(route) do
             if not running then break end
             log("=== Entering " .. shop.name .. " ===")
-            -- Перемещаемся к точке магазина (координаты из route)
             walkTo(shop.position)
             task.wait(1)
 
-            -- Внутри магазина обрабатываем все предметы этого магазина
             local shopItems = {}
             for _, item in ipairs(clothes) do
                 if item.shop == shop.name and not item.taken and not item.unavailable then
                     table.insert(shopItems, item)
                 end
             end
-            -- Сортируем по близости внутри магазина
             local curPos = rootPart.Position
             table.sort(shopItems, function(a, b)
                 local dA = a.position and (a.position - curPos).Magnitude or 9999
@@ -839,7 +907,6 @@ local function mainLoop()
                 if takenCount >= SETTINGS.MAX_TOTAL then shouldPay = true break end
                 if shopLimits[item.shop] and shopLimits[item.shop] >= SETTINGS.MAX_PER_SHOP then break end
 
-                -- Если цена не назначена (не было в кэше) – GUI fallback
                 if not item.price then
                     if item.position then walkTo(item.position) task.wait(0.3) end
                     local guiPrice = getItemPriceFromGUI(item.name)
@@ -929,4 +996,4 @@ sortByShopOrder(clothes)
 updateStats()
 updateList()
 updateRestockDisplay()
-print("Script v22.0 loaded!")
+print("Script v22.1 loaded!")
