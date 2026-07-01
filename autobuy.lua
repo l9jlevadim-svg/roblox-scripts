@@ -1,6 +1,5 @@
-local u1String = [[
 local u1 = {
-  RARITIES = {
+    RARITIES = {
         Common = {
             displayName = "Common",
             color = Color3.fromRGB(180, 180, 180)
@@ -5581,21 +5580,6 @@ u1.SHOP_ITEMS.Xiaomi = {
         economyProfile = "safe"
     }
 };
-function u1.getAllForBrand(p2) --[[ Line: 906 ]]
-    -- upvalues: u1 (copy)
-    local v3 = u1.SHOP_ITEMS[p2];
-    if not v3 then
-        return {};
-    end;
-    local v4 = {};
-    for _, v5 in pairs(v3) do
-        for _, v6 in ipairs(v5) do
-            table.insert(v4, v6);
-        end;
-    end;
-    return v4;
-end;
-return u1;
 -- =====================================================
 -- AUTOBUY v24.0 – предварительная фильтрация из u1
 -- =====================================================
