@@ -1,4 +1,4 @@
--- v19.0 SlotPriceReveal cached prices, filters before walking
+-- v21.0 SlotPriceReveal slot-based cache + GUI fallback
 local Workspace = game:GetService("Workspace")
 local Players = game:GetService("Players")
 local VirtualUser = game:GetService("VirtualUser")
@@ -10,7 +10,7 @@ local character = player.Character or player.CharacterAdded:Wait()
 local humanoid = character:WaitForChild("Humanoid")
 local rootPart = character:WaitForChild("HumanoidRootPart")
 print("\n" .. string.rep("=", 80))
-print("AUTOBUY v19.0")
+print("AUTOBUY v21.0")
 print(string.rep("=", 80) .. "\n")
 local SETTINGS = {
     MAX_PER_SHOP = 15,
@@ -63,24 +63,25 @@ local lastMoveTime = 0
 local totalItemsBought = 0
 local totalMoneySpent = 0
 local cycleCount = 0
-local priceCache = {}
+local priceCache = {}  -- ключ: полный путь слота, значение: таблица {name=..., price=...}
 local ShopRemotes = ReplicatedStorage:FindFirstChild("ShopRemotes")
 local SlotPriceReveal = ShopRemotes and ShopRemotes:FindFirstChild("SlotPriceReveal")
 if SlotPriceReveal then
     SlotPriceReveal.OnClientEvent:Connect(function(payload)
         if type(payload) == "table" then
             for _, item in ipairs(payload) do
-                if type(item) == "table" and item.name and item.price then
-                    local name = tostring(item.name)
-                    local price = tonumber(item.price)
-                    if name and price then
-                        priceCache[name] = price
-                    end
+                local ref = item.slotRef
+                if ref and ref:IsA("Instance") then
+                    local slotPath = ref:GetFullName()
+                    priceCache[slotPath] = {
+                        name = tostring(item.name),
+                        price = tonumber(item.price)
+                    }
                 end
             end
         end
     end)
-    print("Connected to SlotPriceReveal")
+    print("Connected to SlotPriceReveal (cache by slot)")
 else
     print("SlotPriceReveal not found, will rely on GUI")
 end
@@ -119,7 +120,7 @@ local function getItemPriceFromGUI(itemName)
         if label.Text:lower():find(itemName:lower(), 1, true) then
             for j = i, math.min(i+5, #labels) do
                 local txt = labels[j].Text
-                local num = txt:match("(%d+)%s*R%$")
+                local num = txt:match("(%d+)%s*[PR]%s*$")
                 if num then return tonumber(num) end
             end
         end
@@ -238,16 +239,12 @@ local function findClothes()
                 end
                 local floor = "1st floor"
                 if position and position.Y > 10 then floor = "2nd floor" end
-                local cachedPrice = priceCache[rawName]
-                if not cachedPrice then
-                    for nameInCache, price in pairs(priceCache) do
-                        if nameInCache:lower():find(rawName:lower(), 1, true) or rawName:lower():find(nameInCache:lower(), 1, true) then
-                            cachedPrice = price
-                            break
-                        end
-                    end
-                end
-                local price = cachedPrice
+                -- Ищем родительский Part (слот) и его полный путь для кэша
+                local slotPart = parent
+                while slotPart and not slotPart:IsA("BasePart") do slotPart = slotPart.Parent end
+                local slotPath = slotPart and slotPart:GetFullName()
+                local cached = slotPath and priceCache[slotPath]
+                local price = cached and cached.price
                 local rarity = price and rarityByPrice(price) or nil
                 table.insert(clothes, {
                     obj = obj, parent = parent, name = rawName,
@@ -336,10 +333,9 @@ local function goToPay()
     end
 end
 
--- GUI (identical to v18, insert full GUI here)
--- I'll include the essential GUI skeleton to avoid errors
+-- GUI (тот же, что в v18, с таймером рестока)
 local screenGui = Instance.new("ScreenGui")
-screenGui.Name = "AutoBuy_v19"
+screenGui.Name = "AutoBuy_v21"
 screenGui.ResetOnSpawn = false
 screenGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
 screenGui.Parent = player:WaitForChild("PlayerGui")
@@ -360,7 +356,7 @@ local titleLabel = Instance.new("TextLabel")
 titleLabel.Size = UDim2.new(1,-45,1,0)
 titleLabel.Position = UDim2.new(0,10,0,0)
 titleLabel.BackgroundTransparency = 1
-titleLabel.Text = " AutoBuy v19.0 | Cache"
+titleLabel.Text = " AutoBuy v21.0 | Slot cache"
 titleLabel.TextColor3 = Color3.new(1,1,1)
 titleLabel.Font = Enum.Font.GothamBold
 titleLabel.TextSize = 14
@@ -768,11 +764,14 @@ local function mainLoop()
             if shopCount >= SETTINGS.MAX_PER_SHOP then continue end
 
             if not item.price then
+                -- GUI fallback при подходе
+                if item.position then walkTo(item.position) task.wait(0.3) end
                 local guiPrice = getItemPriceFromGUI(item.name)
                 if guiPrice then
                     item.price = guiPrice
                     item.rarity = rarityByPrice(guiPrice)
                 else
+                    log("No price for " .. item.name)
                     item.unavailable = true
                     updateList()
                     continue
@@ -784,7 +783,10 @@ local function mainLoop()
                 continue
             end
 
-            if item.position then walkTo(item.position) task.wait(0.3) end
+            if item.position and (rootPart.Position - item.position).Magnitude > 3 then
+                walkTo(item.position)
+                task.wait(0.3)
+            end
 
             local success = tryTakeItem(item)
             if success then
@@ -843,4 +845,4 @@ sortByDistance()
 updateStats()
 updateList()
 updateRestockDisplay()
-print("Script v19.0 loaded!")
+print("Script v21.0 loaded!")
