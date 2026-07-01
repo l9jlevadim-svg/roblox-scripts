@@ -1,4 +1,4 @@
--- v22.1 route integrated, auto-cartographer
+-- v23.0 final: SlotPriceReveal + smart walk + cart sync
 local Workspace = game:GetService("Workspace")
 local Players = game:GetService("Players")
 local VirtualUser = game:GetService("VirtualUser")
@@ -10,11 +10,11 @@ local character = player.Character or player.CharacterAdded:Wait()
 local humanoid = character:WaitForChild("Humanoid")
 local rootPart = character:WaitForChild("HumanoidRootPart")
 print("\n" .. string.rep("=", 80))
-print("AUTOBUY v22.1")
+print("AUTOBUY v23.0")
 print(string.rep("=", 80) .. "\n")
 local SETTINGS = {
     MAX_PER_SHOP = 15,
-    MAX_TOTAL = 15,
+    MAX_TOTAL = 15,          -- обновляется через GUI
     SUCCESS_DELAY = 4,
     FAIL_DELAY = 1,
     MOVE_INTERVAL = 2,
@@ -27,7 +27,7 @@ local SETTINGS = {
     MAX_PRICE = 999999,
     NAME_FILTER = "",
     SHOP_FILTER = "",
-    OBSTACLE_CHECK_DIST = 3.5,
+    OBSTACLE_CHECK_DIST = 3.0,
     SIDE_STEP_DIST = 5,
     RARITY_BY_PRICE = {
         { min = 100000, rarity = "legendary" },
@@ -85,26 +85,19 @@ else
     print("SlotPriceReveal not found")
 end
 
--- Встроенный картограф (выполняется, если маршрута нет)
+-- ========== КАРТА МАГАЗИНОВ ==========
 local function buildRoute()
     print("Building shop route...")
     local shops = {}
     for _, obj in ipairs(Workspace:GetDescendants()) do
         if obj:IsA("Model") and obj.Name:match("^Shop_ShopZone_%d+$") then
-            local pos = nil
-            if obj.PrimaryPart then
-                pos = obj.PrimaryPart.Position
-            else
+            local pos = obj.PrimaryPart and obj.PrimaryPart.Position or nil
+            if not pos then
                 for _, part in ipairs(obj:GetChildren()) do
-                    if part:IsA("BasePart") then
-                        pos = part.Position
-                        break
-                    end
+                    if part:IsA("BasePart") then pos = part.Position break end
                 end
             end
-            if pos then
-                table.insert(shops, {name = obj.Name, position = pos})
-            end
+            if pos then table.insert(shops, {name=obj.Name, position=pos}) end
         end
     end
     if #shops < 2 then return nil end
@@ -113,71 +106,167 @@ local function buildRoute()
     for i = 1, n do
         dist[i] = {}
         for j = 1, n do
-            if i == j then
-                dist[i][j] = 0
-            else
+            if i == j then dist[i][j] = 0 else
                 local path = PathfindingService:CreatePath({
-                    AgentRadius = 2, AgentHeight = 5, AgentCanJump = true, AgentMaxSlope = 45, Costs = { Water = 20 }
+                    AgentRadius = 2, AgentHeight = 5, AgentCanJump = true, AgentMaxSlope = 45
                 })
-                local success = pcall(function() path:ComputeAsync(shops[i].position, shops[j].position) end)
-                if success and path.Status == Enum.PathStatus.Success then
-                    local waypoints = path:GetWaypoints()
-                    local total = 0
+                local s = pcall(function() path:ComputeAsync(shops[i].position, shops[j].position) end)
+                if s and path.Status == Enum.PathStatus.Success then
+                    local wps = path:GetWaypoints()
+                    local d = 0
                     local prev = shops[i].position
-                    for _, wp in ipairs(waypoints) do
-                        total = total + (wp.Position - prev).Magnitude
-                        prev = wp.Position
-                    end
-                    dist[i][j] = total
+                    for _, wp in ipairs(wps) do d = d + (wp.Position - prev).Magnitude; prev = wp.Position end
+                    dist[i][j] = d
                 else
                     dist[i][j] = (shops[j].position - shops[i].position).Magnitude
                 end
             end
         end
     end
-    local unvisited = {}
-    for i = 1, n do unvisited[i] = true end
+    local unvisited = {} for i = 1, n do unvisited[i] = true end
     local route = {}
-    local startIdx = 1
-    local minStartDist = math.huge
+    local startIdx = 1; local minStart = math.huge
     for i = 1, n do
         local d = (shops[i].position - rootPart.Position).Magnitude
-        if d < minStartDist then minStartDist = d; startIdx = i end
+        if d < minStart then minStart = d; startIdx = i end
     end
-    table.insert(route, startIdx)
-    unvisited[startIdx] = nil
+    table.insert(route, startIdx); unvisited[startIdx] = nil
     for _ = 2, n do
-        local bestIdx = nil
-        local bestDist = math.huge
+        local best, bestD = nil, math.huge
         for i in pairs(unvisited) do
             local d = dist[route[#route]][i]
-            if d < bestDist then bestDist = d; bestIdx = i end
+            if d < bestD then bestD = d; best = i end
         end
-        table.insert(route, bestIdx)
-        unvisited[bestIdx] = nil
+        table.insert(route, best); unvisited[best] = nil
     end
-    local finalRoute = {}
-    for i, idx in ipairs(route) do
-        finalRoute[i] = {name = shops[idx].name, position = shops[idx].position}
-    end
-    _G.bestRoute = finalRoute
-    print("Route built: " .. #finalRoute .. " shops")
-    return finalRoute
+    local final = {}
+    for i, idx in ipairs(route) do final[i] = {name=shops[idx].name, position=shops[idx].position} end
+    _G.bestRoute = final
+    print("Route built: " .. #final .. " shops")
+    return final
 end
-
--- Загрузка маршрута
-local route = _G.bestRoute
-if not route then
-    route = buildRoute()
-    if not route then
-        error("No shops found or route failed")
-    end
-end
+local route = _G.bestRoute or buildRoute()
+if not route then error("No shops found") end
 print("Route loaded: " .. #route .. " shops")
 
-local function log(msg)
-    print("[AutoBuy] " .. msg)
+-- ========== СИНХРОНИЗАЦИЯ КОРЗИНЫ ==========
+local function syncCartCount()
+    local playerGui = player:FindFirstChild("PlayerGui")
+    if not playerGui then return end
+    for _, gui in ipairs(playerGui:GetChildren()) do
+        if gui:IsA("ScreenGui") then
+            for _, el in ipairs(gui:GetDescendants()) do
+                if el.Name == "Count" and (el:IsA("TextLabel") or el:IsA("TextBox")) then
+                    local current, max = el.Text:match("(%d+)%s*/%s*(%d+)")
+                    if current then
+                        takenCount = tonumber(current)
+                        SETTINGS.MAX_TOTAL = tonumber(max) or 15
+                    end
+                    return
+                end
+            end
+        end
+    end
 end
+local function cartSyncUpdater()
+    while running do
+        syncCartCount()
+        task.wait(0.5)
+    end
+end
+
+-- ========== УМНЫЙ ОБХОД ==========
+local function walkTo(targetPos)
+    if not targetPos or not humanoid or not rootPart then return false end
+    local startPos = rootPart.Position
+    local totalDistance = (targetPos - startPos).Magnitude
+    if totalDistance <= 3 then return true end
+
+    local originalWalkSpeed = humanoid.WalkSpeed
+    local originalJumpPower = humanoid.JumpPower
+    humanoid.WalkSpeed = SETTINGS.WALK_SPEED
+    humanoid.JumpPower = SETTINGS.JUMP_POWER
+
+    local lastPos = rootPart.Position
+    local stuckTime = 0
+    local startTime = tick()
+    local maxTime = math.min(totalDistance * 0.8, 60)
+
+    local avoidDir = nil
+    local avoidTimer = 0
+    local rayParams = RaycastParams.new()
+    rayParams.FilterType = Enum.RaycastFilterType.Blacklist
+    rayParams.FilterDescendantsInstances = {character}
+
+    while tick() - startTime < maxTime do
+        if not running then break end
+        local pos = rootPart.Position
+        if (pos - targetPos).Magnitude <= 3 then break end
+
+        local moved = (pos - lastPos).Magnitude
+        if moved < 0.3 then stuckTime += 0.15 else stuckTime = 0; avoidDir = nil; avoidTimer = 0 end
+        lastPos = pos
+
+        local dirToTarget = (targetPos - pos).Unit
+        local low = pos + Vector3.new(0, 1.5, 0)
+        local mid = pos + Vector3.new(0, 2.5, 0)
+        local high = pos + Vector3.new(0, 3.5, 0)
+        local rayLow = workspace:Raycast(low, dirToTarget * SETTINGS.OBSTACLE_CHECK_DIST, rayParams)
+        local rayMid = workspace:Raycast(mid, dirToTarget * SETTINGS.OBSTACLE_CHECK_DIST, rayParams)
+        local rayHigh = workspace:Raycast(high, dirToTarget * SETTINGS.OBSTACLE_CHECK_DIST, rayParams)
+
+        local onlyHigh = rayHigh and not rayMid and not rayLow
+        local bodyBlocked = rayMid or rayLow
+
+        if not bodyBlocked and not onlyHigh then
+            humanoid:MoveTo(targetPos)
+        elseif onlyHigh then
+            humanoid:MoveTo(targetPos)  -- под вешалкой
+        else
+            if stuckTime >= 1 then
+                if not avoidDir then
+                    local right = dirToTarget:Cross(Vector3.new(0,1,0)).Unit
+                    local left = -right
+                    local function clear(dir)
+                        return workspace:Raycast(low, dir * SETTINGS.SIDE_STEP_DIST, rayParams) == nil
+                            and workspace:Raycast(mid, dir * SETTINGS.SIDE_STEP_DIST, rayParams) == nil
+                            and workspace:Raycast(high, dir * SETTINGS.SIDE_STEP_DIST, rayParams) == nil
+                    end
+                    local rClear, lClear = clear(right), clear(left)
+                    if rClear and lClear then
+                        local dotR = right:Dot(dirToTarget)
+                        local dotL = left:Dot(dirToTarget)
+                        avoidDir = dotR > dotL and right or left
+                    elseif rClear then avoidDir = right
+                    elseif lClear then avoidDir = left
+                    else
+                        humanoid:MoveTo(pos - dirToTarget * 3)
+                        task.wait(0.5)
+                        avoidDir = right
+                    end
+                    avoidTimer = tick()
+                end
+                local moveDir = (avoidDir + dirToTarget * 0.4).Unit
+                humanoid:MoveTo(pos + moveDir * SETTINGS.SIDE_STEP_DIST)
+                if tick() - avoidTimer > 1.5 then avoidDir = nil end
+            else
+                humanoid:MoveTo(targetPos)
+            end
+        end
+        if stuckTime >= 2 and moved < 0.1 then
+            humanoid:ChangeState(Enum.HumanoidStateType.Jumping)
+            stuckTime = 0
+        end
+        task.wait(0.1)
+    end
+    humanoid.WalkSpeed = originalWalkSpeed
+    humanoid.JumpPower = originalJumpPower
+    if (rootPart.Position - targetPos).Magnitude > 3 then humanoid:MoveTo(targetPos); task.wait(0.5) end
+    return (rootPart.Position - targetPos).Magnitude <= 3
+end
+
+-- ========== ОСТАЛЬНЫЕ ФУНКЦИИ ==========
+local function log(msg) print("[AutoBuy] " .. msg) end
 local function formatNumber(num)
     if num >= 1000000 then return string.format("%.1fM", num / 1000000)
     elseif num >= 1000 then return string.format("%.1fK", num / 1000)
@@ -243,76 +332,6 @@ local function findSeller()
     end
     return nil
 end
-local function walkTo(targetPos)
-    if not targetPos or not humanoid or not rootPart then return false end
-    local startPos = rootPart.Position
-    local totalDistance = (targetPos - startPos).Magnitude
-    if totalDistance <= 3 then return true end
-
-    local originalWalkSpeed = humanoid.WalkSpeed
-    local originalJumpPower = humanoid.JumpPower
-    humanoid.WalkSpeed = SETTINGS.WALK_SPEED
-    humanoid.JumpPower = SETTINGS.JUMP_POWER
-
-    local path = PathfindingService:CreatePath({
-        AgentRadius = 2, AgentHeight = 5, AgentCanJump = true, AgentMaxSlope = 45, Costs = { Water = 20 }
-    })
-    pcall(function() path:ComputeAsync(rootPart.Position, targetPos) end)
-    local waypoints = path:GetWaypoints()
-    if #waypoints == 0 then
-        humanoid:MoveTo(targetPos)
-        local t = tick()
-        while (rootPart.Position - targetPos).Magnitude > 3 and tick()-t < 8 do task.wait(0.2) end
-        humanoid.WalkSpeed = originalWalkSpeed
-        humanoid.JumpPower = originalJumpPower
-        return (rootPart.Position - targetPos).Magnitude <= 3
-    end
-
-    local lastPos = rootPart.Position
-    local stuckTime = 0
-    local wpIdx = 1
-    local startTime = tick()
-    local maxTime = math.min(totalDistance * 0.8, 60)
-    while tick()-startTime < maxTime do
-        if not running then break end
-        local pos = rootPart.Position
-        if (pos - targetPos).Magnitude <= 3 then break end
-        local moved = (pos - lastPos).Magnitude
-        if moved < 0.3 then stuckTime += 0.15 else stuckTime = 0 end
-        lastPos = pos
-        if stuckTime >= 3 then
-            humanoid:ChangeState(Enum.HumanoidStateType.Jumping)
-            stuckTime = 0
-        end
-        if wpIdx <= #waypoints then
-            local wp = waypoints[wpIdx]
-            if (pos - wp.Position).Magnitude <= 4 then wpIdx += 1
-            else humanoid:MoveTo(wp.Position) end
-        else humanoid:MoveTo(targetPos) end
-        task.wait(0.1)
-    end
-    humanoid.WalkSpeed = originalWalkSpeed
-    humanoid.JumpPower = originalJumpPower
-    return (rootPart.Position - targetPos).Magnitude <= 3
-end
-local function sortByShopOrder(items)
-    local shopOrder = {}
-    for i, shop in ipairs(route) do
-        shopOrder[shop.name] = i
-    end
-    table.sort(items, function(a, b)
-        return (shopOrder[a.shop] or 999) < (shopOrder[b.shop] or 999)
-    end)
-end
-local function doQuickMove()
-    local now = tick()
-    if now - lastMoveTime >= SETTINGS.MOVE_INTERVAL then
-        if humanoid and humanoid.Health > 0 then
-            humanoid:MoveTo(rootPart.Position + Vector3.new(math.random(-2,2),0,math.random(-2,2)))
-            lastMoveTime = now
-        end
-    end
-end
 local function findClothes()
     clothes = {}
     for _, obj in ipairs(Workspace:GetDescendants()) do
@@ -349,6 +368,13 @@ local function findClothes()
         end
     end
     log("Found " .. #clothes .. " items")
+end
+local function sortByShopOrder(items)
+    local shopOrder = {}
+    for i, shop in ipairs(route) do shopOrder[shop.name] = i end
+    table.sort(items, function(a, b)
+        return (shopOrder[a.shop] or 999) < (shopOrder[b.shop] or 999)
+    end)
 end
 local function activatePrompt(prompt)
     if not prompt then return false end
@@ -406,16 +432,16 @@ local function goToPay()
     if seller.position then walkTo(seller.position) task.wait(1) end
     activatePrompt(seller.obj)
     task.wait(2)
-    local ok = pay()
-    if ok then
+    local paid = pay()
+    if paid then
         paidCount = paidCount + 1
         totalItemsBought = totalItemsBought + takenCount
         cycleCount = cycleCount + 1
         takenCount = 0
     else
         task.wait(1)
-        ok = pay()
-        if ok then
+        paid = pay()
+        if paid then
             paidCount = paidCount + 1
             totalItemsBought = totalItemsBought + takenCount
             cycleCount = cycleCount + 1
@@ -425,9 +451,186 @@ local function goToPay()
         end
     end
 end
--- GUI (same as before)
+local function doQuickMove()
+    local now = tick()
+    if now - lastMoveTime >= SETTINGS.MOVE_INTERVAL then
+        if humanoid and humanoid.Health > 0 then
+            humanoid:MoveTo(rootPart.Position + Vector3.new(math.random(-2,2),0,math.random(-2,2)))
+            lastMoveTime = now
+        end
+    end
+end
+local function updateRestockDisplay()
+    local text = "Restock: "
+    local playerGui = player:FindFirstChild("PlayerGui")
+    if playerGui then
+        for _, gui in ipairs(playerGui:GetChildren()) do
+            if gui:IsA("ScreenGui") then
+                for _, el in ipairs(gui:GetDescendants()) do
+                    if el.Name == "TimerLabel" then
+                        text = el.Text
+                        break
+                    end
+                end
+            end
+        end
+    end
+    if text == "Restock: " then text = "Restock: --:--" end
+    return text
+end
+local function waitForRestock()
+    while running do
+        local playerGui = player:FindFirstChild("PlayerGui")
+        if playerGui then
+            for _, gui in ipairs(playerGui:GetChildren()) do
+                if gui:IsA("ScreenGui") then
+                    for _, el in ipairs(gui:GetDescendants()) do
+                        if el.Name == "TimerLabel" then
+                            local min, sec = el.Text:match("(%d+):(%d+)")
+                            if min and sec then
+                                local remaining = tonumber(min)*60 + tonumber(sec)
+                                if remaining >= 590 then
+                                    return
+                                end
+                            end
+                        end
+                    end
+                end
+            end
+        end
+        doQuickMove()
+        task.wait(1)
+    end
+end
+
+-- ========== ГЛАВНЫЙ ЦИКЛ ==========
+local function mainLoop()
+    task.spawn(cartSyncUpdater)
+    while running do
+        for _, item in ipairs(clothes) do item.taken = false item.unavailable = false item.failedAttempts = 0 end
+        shopLimits = {}
+        takenCount = 0
+        lastMoveTime = tick()
+        findClothes()
+        sortByShopOrder(clothes)
+        updateList()
+        log("New cycle (route)")
+        local paid = false
+        for shopIdx, shop in ipairs(route) do
+            if not running or paid then break end
+            syncCartCount()
+            if takenCount >= SETTINGS.MAX_TOTAL then goToPay(); paid = true; break end
+            log("=== Entering " .. shop.name .. " ===")
+            walkTo(shop.position)
+            task.wait(1)
+
+            local shopItems = {}
+            for _, item in ipairs(clothes) do
+                if item.shop == shop.name and not item.taken and not item.unavailable then
+                    table.insert(shopItems, item)
+                end
+            end
+            local curPos = rootPart.Position
+            table.sort(shopItems, function(a,b)
+                local dA = a.position and (a.position-curPos).Magnitude or 9999
+                local dB = b.position and (b.position-curPos).Magnitude or 9999
+                return dA < dB
+            end)
+
+            for _, item in ipairs(shopItems) do
+                if not running or paid then break end
+                syncCartCount()
+                if takenCount >= SETTINGS.MAX_TOTAL then goToPay(); paid = true; break end
+                if shopLimits[item.shop] and shopLimits[item.shop] >= SETTINGS.MAX_PER_SHOP then break end
+
+                if not item.price then
+                    if item.position then walkTo(item.position) task.wait(0.3) end
+                    local guiPrice = getItemPriceFromGUI(item.name)
+                    if guiPrice then
+                        item.price = guiPrice
+                        item.rarity = rarityByPrice(guiPrice)
+                    else
+                        log("No price for " .. item.name)
+                        item.unavailable = true
+                        updateList()
+                        continue
+                    end
+                end
+
+                if not shouldBuyItem(item) then
+                    updateList()
+                    continue
+                end
+
+                if item.position and (rootPart.Position - item.position).Magnitude > 3 then
+                    walkTo(item.position)
+                    task.wait(0.3)
+                end
+
+                local success = tryTakeItem(item)
+                if success then
+                    item.taken = true
+                    shopLimits[item.shop] = (shopLimits[item.shop] or 0) + 1
+                    totalMoneySpent = totalMoneySpent + (item.price or 0)
+                    syncCartCount()
+                    updateStats()
+                    updateList()
+                    if takenCount >= SETTINGS.MAX_TOTAL then
+                        goToPay()
+                        paid = true
+                        break
+                    end
+                    addLog("Success! Waiting " .. SETTINGS.SUCCESS_DELAY .. "s")
+                    local waitStart = tick()
+                    while tick() - waitStart < SETTINGS.SUCCESS_DELAY do
+                        if not running then break end
+                        doQuickMove()
+                        task.wait(0.5)
+                    end
+                else
+                    addLog("Failed. Waiting " .. SETTINGS.FAIL_DELAY .. "s")
+                    local waitStart = tick()
+                    while tick() - waitStart < SETTINGS.FAIL_DELAY do
+                        if not running then break end
+                        doQuickMove()
+                        task.wait(0.5)
+                    end
+                    updateList()
+                end
+            end
+
+            if paid then break end
+            if shopIdx == #route then
+                if takenCount > 0 then goToPay(); paid = true end
+                break
+            else
+                local hasMoreItems = false
+                for i = shopIdx + 1, #route do
+                    for _, item in ipairs(clothes) do
+                        if item.shop == route[i].name and not item.taken and not item.unavailable and shouldBuyItem(item) then
+                            hasMoreItems = true
+                            break
+                        end
+                    end
+                    if hasMoreItems then break end
+                end
+                if not hasMoreItems and takenCount > 0 then goToPay(); paid = true; break end
+            end
+        end
+
+        if not paid and takenCount > 0 then goToPay() end
+        if running then
+            findClothes()
+            sortByShopOrder(clothes)
+            updateList()
+            waitForRestock()
+        end
+    end
+end
+
+-- ========== GUI (идентичен предыдущим) ==========
 local screenGui = Instance.new("ScreenGui")
-screenGui.Name = "AutoBuy_v22"
+screenGui.Name = "AutoBuy_v23"
 screenGui.ResetOnSpawn = false
 screenGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
 screenGui.Parent = player:WaitForChild("PlayerGui")
@@ -448,7 +651,7 @@ local titleLabel = Instance.new("TextLabel")
 titleLabel.Size = UDim2.new(1,-45,1,0)
 titleLabel.Position = UDim2.new(0,10,0,0)
 titleLabel.BackgroundTransparency = 1
-titleLabel.Text = " AutoBuy v22.1 | Route"
+titleLabel.Text = " AutoBuy v23.0 | Final"
 titleLabel.TextColor3 = Color3.new(1,1,1)
 titleLabel.Font = Enum.Font.GothamBold
 titleLabel.TextSize = 14
@@ -717,32 +920,6 @@ local listLayout = Instance.new("UIListLayout")
 listLayout.Padding = UDim.new(0,4)
 listLayout.Parent = scrollFrame
 
-local function updateRestockDisplay()
-    local text = "Restock: "
-    local playerGui = player:FindFirstChild("PlayerGui")
-    if playerGui then
-        for _, gui in ipairs(playerGui:GetChildren()) do
-            if gui:IsA("ScreenGui") then
-                for _, el in ipairs(gui:GetDescendants()) do
-                    if el.Name == "TimerLabel" then
-                        text = el.Text
-                        break
-                    end
-                end
-            end
-        end
-    end
-    if text == "Restock: " then text = "Restock: --:--" end
-    restockLabel.Text = text
-end
-
-local function restockTimerUpdater()
-    while running do
-        updateRestockDisplay()
-        task.wait(1)
-    end
-end
-
 local function updateStats()
     takenLabel.Text = "Taken: " .. takenCount .. "/" .. SETTINGS.MAX_TOTAL
     paidLabel.Text = "Paid: " .. paidCount
@@ -753,10 +930,8 @@ end
 local function getFilteredItems()
     local filtered = {}
     for _, item in ipairs(clothes) do
-        if not item.taken and not item.unavailable then
-            if shouldBuyItem(item) then
-                table.insert(filtered, item)
-            end
+        if not item.taken and not item.unavailable and shouldBuyItem(item) then
+            table.insert(filtered, item)
         end
     end
     return filtered
@@ -812,167 +987,7 @@ local function updateList()
     scrollFrame.CanvasSize = UDim2.new(0,0,0, listLayout.AbsoluteContentSize.Y + 10)
 end
 
-local function waitForRestock()
-    while running do
-        local playerGui = player:FindFirstChild("PlayerGui")
-        if playerGui then
-            for _, gui in ipairs(playerGui:GetChildren()) do
-                if gui:IsA("ScreenGui") then
-                    for _, el in ipairs(gui:GetDescendants()) do
-                        if el.Name == "TimerLabel" then
-                            local min, sec = el.Text:match("(%d+):(%d+)")
-                            if min and sec then
-                                local remaining = tonumber(min)*60 + tonumber(sec)
-                                if remaining >= 590 then
-                                    return
-                                end
-                            end
-                        end
-                    end
-                end
-            end
-        end
-        doQuickMove()
-        task.wait(1)
-    end
-end
-
-local function ensureCacheFilled()
-    if next(priceCache) then return true end
-    log("Price cache empty, trying to get data...")
-    if #clothes > 0 then
-        local nearestItem = clothes[1]
-        if nearestItem.position then
-            walkTo(nearestItem.position)
-            task.wait(2)
-            if next(priceCache) then
-                log("Cache filled after walking to nearest item")
-                return true
-            end
-        end
-    end
-    local waited = 0
-    while waited < 3 do
-        task.wait(1)
-        waited = waited + 1
-        if next(priceCache) then return true end
-    end
-    log("Could not fill cache, will rely on GUI")
-    return false
-end
-
-local function mainLoop()
-    task.spawn(restockTimerUpdater)
-    while running do
-        for _, item in ipairs(clothes) do item.taken = false item.unavailable = false item.failedAttempts = 0 end
-        shopLimits = {}
-        takenCount = 0
-        lastMoveTime = tick()
-
-        findClothes()
-        sortByShopOrder(clothes)
-        updateList()
-
-        ensureCacheFilled()
-        if next(priceCache) then
-            findClothes()
-            sortByShopOrder(clothes)
-            updateList()
-        end
-
-        addLog("New cycle (route)")
-
-        local shouldPay = false
-        for _, shop in ipairs(route) do
-            if not running then break end
-            log("=== Entering " .. shop.name .. " ===")
-            walkTo(shop.position)
-            task.wait(1)
-
-            local shopItems = {}
-            for _, item in ipairs(clothes) do
-                if item.shop == shop.name and not item.taken and not item.unavailable then
-                    table.insert(shopItems, item)
-                end
-            end
-            local curPos = rootPart.Position
-            table.sort(shopItems, function(a, b)
-                local dA = a.position and (a.position - curPos).Magnitude or 9999
-                local dB = b.position and (b.position - curPos).Magnitude or 9999
-                return dA < dB
-            end)
-
-            for _, item in ipairs(shopItems) do
-                if not running then break end
-                if takenCount >= SETTINGS.MAX_TOTAL then shouldPay = true break end
-                if shopLimits[item.shop] and shopLimits[item.shop] >= SETTINGS.MAX_PER_SHOP then break end
-
-                if not item.price then
-                    if item.position then walkTo(item.position) task.wait(0.3) end
-                    local guiPrice = getItemPriceFromGUI(item.name)
-                    if guiPrice then
-                        item.price = guiPrice
-                        item.rarity = rarityByPrice(guiPrice)
-                    else
-                        log("No price for " .. item.name)
-                        item.unavailable = true
-                        updateList()
-                        continue
-                    end
-                end
-
-                if not shouldBuyItem(item) then
-                    updateList()
-                    continue
-                end
-
-                if item.position and (rootPart.Position - item.position).Magnitude > 3 then
-                    walkTo(item.position)
-                    task.wait(0.3)
-                end
-
-                local success = tryTakeItem(item)
-                if success then
-                    item.taken = true
-                    takenCount = takenCount + 1
-                    shopLimits[item.shop] = (shopLimits[item.shop] or 0) + 1
-                    totalMoneySpent = totalMoneySpent + (item.price or 0)
-                    updateStats()
-                    updateList()
-                    if takenCount >= SETTINGS.MAX_TOTAL then shouldPay = true break end
-                    addLog("Success! Waiting " .. SETTINGS.SUCCESS_DELAY .. "s")
-                    local waitStart = tick()
-                    while tick() - waitStart < SETTINGS.SUCCESS_DELAY do
-                        if not running then break end
-                        doQuickMove()
-                        task.wait(0.5)
-                    end
-                else
-                    addLog("Failed. Waiting " .. SETTINGS.FAIL_DELAY .. "s")
-                    local waitStart = tick()
-                    while tick() - waitStart < SETTINGS.FAIL_DELAY do
-                        if not running then break end
-                        doQuickMove()
-                        task.wait(0.5)
-                    end
-                    updateList()
-                end
-            end
-            if shouldPay or takenCount >= SETTINGS.MAX_TOTAL then break end
-        end
-
-        if shouldPay or takenCount > 0 then
-            goToPay()
-            if running then
-                findClothes()
-                sortByShopOrder(clothes)
-                updateList()
-            end
-        end
-        waitForRestock()
-    end
-end
-
+-- ========== ЗАПУСК ==========
 startBtn.MouseButton1Click:Connect(function()
     if running then
         running = false
@@ -984,16 +999,22 @@ startBtn.MouseButton1Click:Connect(function()
         startBtn.BackgroundColor3 = Color3.fromRGB(220,50,50)
         findClothes()
         sortByShopOrder(clothes)
-        ensureCacheFilled()
-        if next(priceCache) then findClothes(); sortByShopOrder(clothes) end
         updateStats()
         updateList()
+        -- запускаем фоновое обновление таймера рестока
+        task.spawn(function()
+            while running do
+                restockLabel.Text = updateRestockDisplay()
+                task.wait(1)
+            end
+        end)
         task.spawn(mainLoop)
     end
 end)
+-- Первичная инициализация
 findClothes()
 sortByShopOrder(clothes)
 updateStats()
 updateList()
-updateRestockDisplay()
-print("Script v22.1 loaded!")
+restockLabel.Text = updateRestockDisplay()
+print("Script v23.0 loaded!")
