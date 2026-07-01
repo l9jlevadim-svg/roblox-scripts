@@ -1,3 +1,4 @@
+local u1String = [[
 local u1 = {
   RARITIES = {
         Common = {
