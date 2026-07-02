@@ -6370,13 +6370,13 @@ local function mainLoop()
         end
 
         if running then
-            findClothes()
-            updateList()
-            waitForRestock()
-        end
+    findClothes()
+    updateList()
+    if SETTINGS.ESP_ENABLED then
+        updateESP()
     end
+    waitForRestock()
 end
-
 -- ========== GUI ==========
 local screenGui = Instance.new("ScreenGui")
 screenGui.Name = "AutoBuy_v24_ESP"
@@ -6893,7 +6893,9 @@ startBtn.MouseButton1Click:Connect(function()
                 task.wait(1)
             end
         end)
-        task.spawn(mainLoop)
+       if SETTINGS.ESP_ENABLED then
+    updateESP()
+end
     end
 end)
 
