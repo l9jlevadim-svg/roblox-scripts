@@ -6644,7 +6644,23 @@ espToggle.Parent = filterFrame
 Instance.new("UICorner", espToggle).CornerRadius = UDim.new(0,6)
 espToggle.MouseButton1Click:Connect(function()
     local newVal = not SETTINGS.ESP_ENABLED
-    toggleESP(newVal)
+    SETTINGS.ESP_ENABLED = newVal
+    
+    if newVal then
+        initESP()
+    else
+        if espConn then 
+            espConn:Disconnect()
+            espConn = nil 
+        end
+        if espGui then 
+            espGui:Destroy()
+            espGui = nil 
+        end
+        espPool = {}
+        espLive = {}
+    end
+    
     espToggle.Text = newVal and "ESP: ON" or "ESP: OFF"
     espToggle.BackgroundColor3 = newVal and Color3.fromRGB(80,200,80) or Color3.fromRGB(40,40,40)
 end)
