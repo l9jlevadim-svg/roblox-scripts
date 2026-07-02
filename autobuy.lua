@@ -6188,7 +6188,15 @@ end
 
 local function updateESP()
     if not SETTINGS.ESP_ENABLED then return end
-    -- Просто обновляем список - RenderStepped сам перерисует
+    if espLive then
+        for holder, w in pairs(espLive) do
+            if w then
+                w.holder.Visible = false
+                table.insert(espPool, w)
+            end
+        end
+        espLive = {}
+    end
 end
 
 -- ========== Interaction ==========
@@ -6559,7 +6567,7 @@ Instance.new("UICorner", restockLabel).CornerRadius = UDim.new(0,8)
 
 -- Filters frame
 local filterFrame = Instance.new("Frame")
-filterFrame.Size = UDim2.new(1,-20,0,180)
+filterFrame.Size = UDim2.new(1,-20,0,170)
 filterFrame.Position = UDim2.new(0,10,0,90)
 filterFrame.BackgroundColor3 = Color3.fromRGB(20,20,20)
 filterFrame.Parent = frame
@@ -6746,7 +6754,7 @@ for i, r in ipairs(rarityList) do
     btn.Font = Enum.Font.GothamBold
     btn.TextSize = 10
     btn.BorderSizePixel = 0
-    btn.AutoButtonColor = false  -- ВАЖНО: отключаем автоцвет
+    btn.AutoButtonColor = false
     btn.Parent = rarityBtnFrame
     Instance.new("UICorner", btn).CornerRadius = UDim.new(0,4)
     
@@ -6768,7 +6776,7 @@ updateRarityButtons(activeRarityBtn)
 -- ESP button
 local espToggle = Instance.new("TextButton")
 espToggle.Size = UDim2.new(0.5, -10, 0, 32)
-espToggle.Position = UDim2.new(0, 5, 0, 120)
+espToggle.Position = UDim2.new(0, 5, 0, 135)
 espToggle.BackgroundColor3 = Color3.fromRGB(40,40,40)
 espToggle.Text = "ESP: OFF"
 espToggle.TextColor3 = Color3.new(1,1,1)
@@ -6923,9 +6931,9 @@ logLabel.Parent = frame
 
 local logText = {}
 local function addLog(msg)
-    table.insert(logText, msg)
-    if #logText > 7 then table.remove(logText, 1) end
-    logLabel.Text = "Log:\n" .. table.concat(logText, "\n")
+table.insert(logText, msg)
+if #logText > 7 then table.remove(logText, 1) end
+logLabel.Text = "Log:\n" .. table.concat(logText, "\n")
 end
 
 local scrollFrame = Instance.new("ScrollingFrame")
