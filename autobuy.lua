@@ -5580,22 +5580,12 @@ u1.SHOP_ITEMS.Xiaomi = {
         economyProfile = "safe"
     }
 };
--- =====================================================
--- 1. Загружаем u1 из строки (вставь сюда весь файл message.txt)
--- =====================================================
-local u1Code = [[
--- ВСТАВЬ СЮДА ВСЁ СОДЕРЖИМОЕ ФАЙЛА message.txt
--- НАЧИНАЯ С local u1 = { ... И ЗАКАНЧИВАЯ return u1;
-]]
-local u1, err = loadstring(u1Code)()
-if not u1 then
-    error("Ошибка загрузки u1: " .. tostring(err))
+print("[OK] u1 загружена.")
+local brandCount = 0
+if u1 and u1.SHOP_ITEMS then
+    for _ in pairs(u1.SHOP_ITEMS) do brandCount = brandCount + 1 end
 end
-print("[OK] u1 загружена. Количество брендов: " .. #u1.SHOP_ITEMS)
-
--- =====================================================
--- 2. Основной скрипт v24 с кнопками редкости
--- =====================================================
+print("Количество брендов: " .. brandCount)
 
 local Workspace = game:GetService("Workspace")
 local Players = game:GetService("Players")
@@ -5612,7 +5602,7 @@ print("\n" .. string.rep("=", 80))
 print("AUTOBUY v24 – с кнопками редкости")
 print(string.rep("=", 80) .. "\n")
 
--- ========== ПОСТРОЕНИЕ КАРТЫ ДАННЫХ ИЗ u1 ==========
+-- ========== ПОСТРОЕНИЕ КАРТЫ ДАННЫХ ==========
 local itemDataById = {}
 local itemDataByName = {}
 local function buildItemMap()
@@ -6439,7 +6429,7 @@ shopInput.Parent = filterFrame
 Instance.new("UICorner", shopInput).CornerRadius = UDim.new(0,4)
 shopInput.FocusLost:Connect(function() SETTINGS.SHOP_FILTER = shopInput.Text updateList() end)
 
--- ===== НОВЫЙ ФИЛЬТР РЕДКОСТИ С КНОПКАМИ =====
+-- ===== КНОПКИ РЕДКОСТИ =====
 local rarityLabel = Instance.new("TextLabel")
 rarityLabel.Size = UDim2.new(0.15,0,0,20)
 rarityLabel.Position = UDim2.new(0,5,0,85)
@@ -6494,11 +6484,9 @@ for i, r in ipairs(rarityList) do
     table.insert(rarityButtons, btn)
 end
 
--- Устанавливаем начальную активную кнопку (All)
 activeRarityBtn = rarityButtons[1]
 updateRarityButtons(activeRarityBtn)
-
--- ===== КОНЕЦ НОВОГО БЛОКА =====
+-- ===== КОНЕЦ КНОПОК =====
 
 local filterStats = Instance.new("TextLabel")
 filterStats.Size = UDim2.new(1,-10,0,20)
