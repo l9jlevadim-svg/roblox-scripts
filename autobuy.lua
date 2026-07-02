@@ -5594,20 +5594,20 @@ local VirtualUser = game:GetService("VirtualUser")
 local UIS = game:GetService("UserInputService")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local PathfindingService = game:GetService("PathfindingService")
+local RunService = game:GetService("RunService")
 local player = Players.LocalPlayer
 local character = player.Character or player.CharacterAdded:Wait()
 local humanoid = character:WaitForChild("Humanoid")
 local rootPart = character:WaitForChild("HumanoidRootPart")
 
 print("\n" .. string.rep("=", 80))
-print("AUTOBUY v24 – фильтры + оплата после магазина")
+print("AUTOBUY v24 + ESP (фильтры + подсветка)")
 print(string.rep("=", 80) .. "\n")
 
 -- ========== ПОСТРОЕНИЕ КАРТЫ ДАННЫХ ==========
 local itemDataById = {}
 local itemDataByTemplate = {}
 local itemDataByName = {}
-local itemDataByBrand = {}
 
 local function buildItemMap()
     for brand, categories in pairs(u1.SHOP_ITEMS) do
@@ -5624,11 +5624,7 @@ local function buildItemMap()
                     spawnChance = item.spawnChance,
                     economyProfile = item.economyProfile
                 }
-                if id and id ~= "" then
-                    itemDataById[id] = data
-                    if not itemDataByBrand[brand] then itemDataByBrand[brand] = {} end
-                    table.insert(itemDataByBrand[brand], data)
-                end
+                if id and id ~= "" then itemDataById[id] = data end
                 if template then itemDataByTemplate[template] = data end
                 if not itemDataByName[item.name] then itemDataByName[item.name] = data end
             end
@@ -5658,7 +5654,9 @@ local SETTINGS = {
     SHOP_FILTER = "",
     RARITY_FILTER = "all",
     OBSTACLE_CHECK_DIST = 3.0,
-    SIDE_STEP_DIST = 5
+    SIDE_STEP_DIST = 5,
+    ESP_ENABLED = false,
+    ESP_MAX_DIST = 250,
 }
 
 -- ========== ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ==========
@@ -5707,7 +5705,7 @@ local function findPosition(obj)
     return nil
 end
 
--- ===== ИЗВЛЕЧЕНИЕ ID ИЗ МОДЕЛИ (Att_700274 -> 700274) =====
+-- ===== ИЗВЛЕЧЕНИЕ ID ИЗ МОДЕЛИ =====
 local function getItemIdFromModel(model)
     if not model then return nil end
     local attrs = model:GetAttributes()
@@ -6056,6 +6054,124 @@ local function getBuyableItems()
     return items
 end
 
+-- ========== ESP (подсветка через стены) ==========
+local espGui, espPool, espLive, espConn
+local function initESP()
+    if espGui and espGui.Parent then return end
+    espGui = Instance.new("ScreenGui")
+    espGui.Name = "AutoBuy_ESP"
+    espGui.ResetOnSpawn = false
+    espGui.DisplayOrder = 500
+    espGui.Parent = player:WaitForChild("PlayerGui")
+    espPool = {}
+    espLive = {}
+    if espConn then espConn:Disconnect() end
+    espConn = RunService.RenderStepped:Connect(function()
+        if not SETTINGS.ESP_ENABLED then return end
+        local camera = workspace.CurrentCamera
+        local hrp = rootPart
+        if not camera or not hrp then return end
+        local active = {}
+        local center = camera.ViewportSize / 2
+        local tracerFrom = Vector2.new(center.X, camera.ViewportSize.Y - 6)
+        local filtered = getBuyableItems()
+        for _, item in ipairs(filtered) do
+            if not item.position then continue end
+            local worldPos = item.position + Vector3.new(0, 2.2, 0)
+            if (worldPos - hrp.Position).Magnitude > SETTINGS.ESP_MAX_DIST then continue end
+            local screenPos, onScreen = camera:WorldToViewportPoint(worldPos)
+            if not onScreen or screenPos.Z <= 0 then continue end
+            local color = RARITY_COLORS[item.rarity] or Color3.fromRGB(200,200,200)
+            local w = table.remove(espPool)
+            if not w then
+                w = {}
+                w.holder = Instance.new("Frame")
+                w.holder.BackgroundTransparency = 1
+                w.holder.Size = UDim2.fromOffset(0,0)
+                w.holder.Parent = espGui
+                w.tracer = Instance.new("Frame")
+                w.tracer.BorderSizePixel = 0
+                w.tracer.AnchorPoint = Vector2.new(0.5,0.5)
+                w.tracer.ZIndex = 2
+                w.tracer.Parent = w.holder
+                w.box = Instance.new("Frame")
+                w.box.BackgroundTransparency = 1
+                w.box.ZIndex = 3
+                w.box.Parent = w.holder
+                w.stroke = Instance.new("UIStroke")
+                w.stroke.Thickness = 2
+                w.stroke.Parent = w.box
+                w.label = Instance.new("TextLabel")
+                w.label.BackgroundTransparency = 1
+                w.label.Size = UDim2.fromOffset(300,36)
+                w.label.TextWrapped = true
+                w.label.AnchorPoint = Vector2.new(0.5,1)
+                w.label.Font = Enum.Font.GothamBold
+                w.label.TextSize = 12
+                w.label.TextStrokeTransparency = 0.3
+                w.label.ZIndex = 4
+                w.label.Parent = w.holder
+            end
+            espLive[w.holder] = w
+            active[w.holder] = true
+            local pos = Vector2.new(screenPos.X, screenPos.Y)
+            local size = math.clamp(3200 / math.max(screenPos.Z, 1), 24, 140)
+            -- tracer
+            local dx = pos.X - tracerFrom.X
+            local dy = pos.Y - tracerFrom.Y
+            local dist = math.sqrt(dx*dx + dy*dy)
+            if dist >= 2 then
+                w.tracer.Visible = true
+                w.tracer.BackgroundColor3 = color
+                w.tracer.Size = UDim2.fromOffset(dist, 2)
+                w.tracer.Position = UDim2.fromOffset((tracerFrom.X + pos.X)/2, (tracerFrom.Y + pos.Y)/2)
+                w.tracer.Rotation = math.deg(math.atan2(dy, dx))
+            else
+                w.tracer.Visible = false
+            end
+            w.box.Visible = true
+            w.box.Size = UDim2.fromOffset(size, size)
+            w.box.Position = UDim2.fromOffset(pos.X - size/2, pos.Y - size/2)
+            w.stroke.Color = color
+            local labelText = string.format("[%s] %s $%s", (RARITY_NAMES[item.rarity] or "?"), item.name, item.price or "?")
+            if #labelText > 40 then labelText = labelText:sub(1,38)..".." end
+            w.label.Text = labelText
+            w.label.TextColor3 = color
+            w.label.Position = UDim2.fromOffset(pos.X, pos.Y - size/2 - 4)
+            w.label.Visible = true
+            w.holder.Visible = true
+        end
+        for holder in pairs(espLive) do
+            if not active[holder] then
+                local w = espLive[holder]
+                w.holder.Visible = false
+                espLive[holder] = nil
+                table.insert(espPool, w)
+            end
+        end
+    end)
+end
+
+local function toggleESP(on)
+    SETTINGS.ESP_ENABLED = on
+    if on then
+        initESP()
+        notify("ESP", "Подсветка включена", 3)
+    else
+        if espConn then espConn:Disconnect(); espConn = nil end
+        if espGui then espGui:Destroy(); espGui = nil end
+        espPool = nil; espLive = nil
+        notify("ESP", "Подсветка выключена", 3)
+    end
+end
+
+local function updateESP()
+    if SETTINGS.ESP_ENABLED then
+        -- просто перерисуем на след. кадре
+    end
+end
+
+-- ========== ОСТАЛЬНЫЕ ФУНКЦИИ (активация, оплата, цикл) ==========
 local function activatePrompt(prompt)
     if not prompt then return false end
     local pos = findPosition(prompt.Parent)
@@ -6279,9 +6395,7 @@ local function mainLoop()
                 break -- выходим из цикла магазинов, начнём новый цикл
             end
 
-            -- Если магазин пуст – идём дальше
             if shopIdx == #route then
-                -- Если дошли до конца и ничего не взяли – ждём ресток
                 break
             end
         end
@@ -6298,9 +6412,9 @@ local function mainLoop()
     end
 end
 
--- ========== GUI (кнопки редкости увеличены) ==========
+-- ========== GUI (с кнопками редкости и ESP) ==========
 local screenGui = Instance.new("ScreenGui")
-screenGui.Name = "AutoBuy_v24"
+screenGui.Name = "AutoBuy_v24_ESP"
 screenGui.ResetOnSpawn = false
 screenGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
 screenGui.Parent = player:WaitForChild("PlayerGui")
@@ -6324,7 +6438,7 @@ local titleLabel = Instance.new("TextLabel")
 titleLabel.Size = UDim2.new(1,-45,1,0)
 titleLabel.Position = UDim2.new(0,10,0,0)
 titleLabel.BackgroundTransparency = 1
-titleLabel.Text = " AutoBuy v24 | Фильтры + оплата после магазина"
+titleLabel.Text = " AutoBuy v24 + ESP"
 titleLabel.TextColor3 = Color3.new(1,1,1)
 titleLabel.Font = Enum.Font.GothamBold
 titleLabel.TextSize = 14
@@ -6341,7 +6455,7 @@ closeBtn.Font = Enum.Font.GothamBold
 closeBtn.TextSize = 18
 closeBtn.Parent = titleBar
 Instance.new("UICorner", closeBtn).CornerRadius = UDim.new(0,8)
-closeBtn.MouseButton1Click:Connect(function() running = false screenGui:Destroy() end)
+closeBtn.MouseButton1Click:Connect(function() running = false screenGui:Destroy(); toggleESP(false) end)
 
 local dragging, dragInput, dragStart, startPos = false, nil, nil, nil
 local function updateDrag(input)
@@ -6414,7 +6528,7 @@ priceMinInput.Parent = filterFrame
 Instance.new("UICorner", priceMinInput).CornerRadius = UDim.new(0,4)
 priceMinInput.FocusLost:Connect(function()
     local val = tonumber(priceMinInput.Text)
-    if val then SETTINGS.MIN_PRICE = val updateList() end
+    if val then SETTINGS.MIN_PRICE = val updateList(); updateESP() end
 end)
 
 local priceMaxLabel = Instance.new("TextLabel")
@@ -6440,7 +6554,7 @@ priceMaxInput.Parent = filterFrame
 Instance.new("UICorner", priceMaxInput).CornerRadius = UDim.new(0,4)
 priceMaxInput.FocusLost:Connect(function()
     local val = tonumber(priceMaxInput.Text)
-    if val then SETTINGS.MAX_PRICE = val updateList() end
+    if val then SETTINGS.MAX_PRICE = val updateList(); updateESP() end
 end)
 
 local nameLabel = Instance.new("TextLabel")
@@ -6465,7 +6579,7 @@ nameInput.Font = Enum.Font.Gotham
 nameInput.TextSize = 11
 nameInput.Parent = filterFrame
 Instance.new("UICorner", nameInput).CornerRadius = UDim.new(0,4)
-nameInput.FocusLost:Connect(function() SETTINGS.NAME_FILTER = nameInput.Text updateList() end)
+nameInput.FocusLost:Connect(function() SETTINGS.NAME_FILTER = nameInput.Text updateList(); updateESP() end)
 
 local shopLabel = Instance.new("TextLabel")
 shopLabel.Size = UDim2.new(0.2,0,0,25)
@@ -6489,9 +6603,9 @@ shopInput.Font = Enum.Font.Gotham
 shopInput.TextSize = 11
 shopInput.Parent = filterFrame
 Instance.new("UICorner", shopInput).CornerRadius = UDim.new(0,4)
-shopInput.FocusLost:Connect(function() SETTINGS.SHOP_FILTER = shopInput.Text updateList() end)
+shopInput.FocusLost:Connect(function() SETTINGS.SHOP_FILTER = shopInput.Text updateList(); updateESP() end)
 
--- ===== КНОПКИ РЕДКОСТИ (увеличены) =====
+-- Кнопки редкости
 local rarityLabel = Instance.new("TextLabel")
 rarityLabel.Size = UDim2.new(0.15,0,0,20)
 rarityLabel.Position = UDim2.new(0,5,0,85)
@@ -6548,6 +6662,7 @@ for i, r in ipairs(rarityList) do
         activeRarityBtn = btn
         updateRarityButtons(btn)
         updateList()
+        updateESP()
     end)
     table.insert(rarityButtons, btn)
 end
@@ -6555,10 +6670,28 @@ end
 activeRarityBtn = rarityButtons[1]
 updateRarityButtons(activeRarityBtn)
 
--- ===== ОСТАЛЬНОЙ GUI =====
+-- Кнопка ESP
+local espToggle = Instance.new("TextButton")
+espToggle.Size = UDim2.new(0.5, -10, 0, 32)
+espToggle.Position = UDim2.new(0, 5, 0, 122)
+espToggle.BackgroundColor3 = Color3.fromRGB(40,40,40)
+espToggle.Text = "ESP: ВЫКЛ"
+espToggle.TextColor3 = Color3.new(1,1,1)
+espToggle.Font = Enum.Font.GothamBold
+espToggle.TextSize = 12
+espToggle.Parent = filterFrame
+Instance.new("UICorner", espToggle).CornerRadius = UDim.new(0,6)
+espToggle.MouseButton1Click:Connect(function()
+    local newVal = not SETTINGS.ESP_ENABLED
+    toggleESP(newVal)
+    espToggle.Text = newVal and "ESP: ВКЛ" or "ESP: ВЫКЛ"
+    espToggle.BackgroundColor3 = newVal and Color3.fromRGB(80,200,80) or Color3.fromRGB(40,40,40)
+end)
+
+-- Остальной GUI
 local filterStats = Instance.new("TextLabel")
 filterStats.Size = UDim2.new(1,-10,0,20)
-filterStats.Position = UDim2.new(0,10,0,215)
+filterStats.Position = UDim2.new(0,10,0,160)
 filterStats.BackgroundTransparency = 1
 filterStats.Text = "Total: 0 | Filtered: 0"
 filterStats.TextColor3 = Color3.fromRGB(200,200,200)
@@ -6569,7 +6702,7 @@ filterStats.Parent = frame
 
 local statsFrame = Instance.new("Frame")
 statsFrame.Size = UDim2.new(1,-20,0,80)
-statsFrame.Position = UDim2.new(0,10,0,240)
+statsFrame.Position = UDim2.new(0,10,0,185)
 statsFrame.BackgroundColor3 = Color3.fromRGB(25,25,25)
 statsFrame.Parent = frame
 Instance.new("UICorner", statsFrame).CornerRadius = UDim.new(0,8)
@@ -6631,7 +6764,7 @@ moneyLabel.Parent = statsFrame
 
 local startBtn = Instance.new("TextButton")
 startBtn.Size = UDim2.new(1,-20,0,55)
-startBtn.Position = UDim2.new(0,10,0,330)
+startBtn.Position = UDim2.new(0,10,0,275)
 startBtn.BackgroundColor3 = Color3.fromRGB(80,200,80)
 startBtn.Text = "START"
 startBtn.TextColor3 = Color3.new(0,0,0)
@@ -6642,7 +6775,7 @@ Instance.new("UICorner", startBtn).CornerRadius = UDim.new(0,10)
 
 local statusLabel = Instance.new("TextLabel")
 statusLabel.Size = UDim2.new(1,-20,0,30)
-statusLabel.Position = UDim2.new(0,10,0,390)
+statusLabel.Position = UDim2.new(0,10,0,335)
 statusLabel.BackgroundTransparency = 1
 statusLabel.Text = "Ready"
 statusLabel.TextColor3 = Color3.fromRGB(100,255,100)
@@ -6653,7 +6786,7 @@ statusLabel.Parent = frame
 
 local logLabel = Instance.new("TextLabel")
 logLabel.Size = UDim2.new(1,-20,0,100)
-logLabel.Position = UDim2.new(0,10,0,425)
+logLabel.Position = UDim2.new(0,10,0,370)
 logLabel.BackgroundTransparency = 1
 logLabel.Text = " Log:"
 logLabel.TextColor3 = Color3.fromRGB(180,180,180)
@@ -6671,8 +6804,8 @@ local function addLog(msg)
 end
 
 local scrollFrame = Instance.new("ScrollingFrame")
-scrollFrame.Size = UDim2.new(1,-20,1,-540)
-scrollFrame.Position = UDim2.new(0,10,0,530)
+scrollFrame.Size = UDim2.new(1,-20,1,-460)
+scrollFrame.Position = UDim2.new(0,10,0,475)
 scrollFrame.BackgroundColor3 = Color3.fromRGB(20,20,20)
 scrollFrame.BorderSizePixel = 0
 scrollFrame.ScrollBarThickness = 6
@@ -6762,6 +6895,9 @@ startBtn.MouseButton1Click:Connect(function()
         running = false
         startBtn.Text = "START"
         startBtn.BackgroundColor3 = Color3.fromRGB(80,200,80)
+        toggleESP(false)
+        espToggle.Text = "ESP: ВЫКЛ"
+        espToggle.BackgroundColor3 = Color3.fromRGB(40,40,40)
     else
         running = true
         startBtn.Text = "STOP"
@@ -6769,6 +6905,11 @@ startBtn.MouseButton1Click:Connect(function()
         findClothes()
         updateStats()
         updateList()
+        if SETTINGS.ESP_ENABLED then
+            toggleESP(true)
+            espToggle.Text = "ESP: ВКЛ"
+            espToggle.BackgroundColor3 = Color3.fromRGB(80,200,80)
+        end
         task.spawn(function()
             while running do
                 restockLabel.Text = updateRestockDisplay()
@@ -6783,4 +6924,4 @@ findClothes()
 updateStats()
 updateList()
 restockLabel.Text = updateRestockDisplay()
-print("AutoBuy v24 загружен – фильтры работают, оплата после сбора в магазине.")
+print("AutoBuy v24 + ESP загружен – фильтры и подсветка работают!")
