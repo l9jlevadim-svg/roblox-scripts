@@ -5580,13 +5580,11 @@ u1.SHOP_ITEMS.Xiaomi = {
         economyProfile = "safe"
     }
 };
-print("[OK] u1 загружена.")
+print("[OK] u1 loaded.")
 local brandCount = 0
-if u1 and u1.SHOP_ITEMS then
-    for _ in pairs(u1.SHOP_ITEMS) do brandCount = brandCount + 1 end
-end
-print("Количество брендов: " .. brandCount)
-if brandCount == 0 then error("u1.SHOP_ITEMS пуста! Проверь вставку.") end
+if u1 and u1.SHOP_ITEMS then for _ in pairs(u1.SHOP_ITEMS) do brandCount = brandCount + 1 end end
+print("Brands: " .. brandCount)
+if brandCount == 0 then error("u1.SHOP_ITEMS is empty") end
 
 local Workspace = game:GetService("Workspace")
 local Players = game:GetService("Players")
@@ -5600,30 +5598,19 @@ local character = player.Character or player.CharacterAdded:Wait()
 local humanoid = character:WaitForChild("Humanoid")
 local rootPart = character:WaitForChild("HumanoidRootPart")
 
-print("\n" .. string.rep("=", 80))
-print("AUTOBUY v24 + ESP (фильтры + подсветка)")
-print(string.rep("=", 80) .. "\n")
+print("AUTOBUY v24 + ESP (filters + wallhack) loaded.")
 
--- ========== ПОСТРОЕНИЕ КАРТЫ ДАННЫХ ==========
+-- ========== Build item data map ==========
 local itemDataById = {}
 local itemDataByTemplate = {}
 local itemDataByName = {}
-
 local function buildItemMap()
     for brand, categories in pairs(u1.SHOP_ITEMS) do
         for category, items in pairs(categories) do
             for _, item in ipairs(items) do
                 local id = tostring(item.id)
                 local template = item.templateId and tostring(item.templateId) or nil
-                local data = {
-                    name = item.name,
-                    price = item.fairPrice,
-                    rarity = item.rarity:lower(),
-                    type = item.type,
-                    brand = brand,
-                    spawnChance = item.spawnChance,
-                    economyProfile = item.economyProfile
-                }
+                local data = { name = item.name, price = item.fairPrice, rarity = item.rarity:lower(), type = item.type, brand = brand }
                 if id and id ~= "" then itemDataById[id] = data end
                 if template then itemDataByTemplate[template] = data end
                 if not itemDataByName[item.name] then itemDataByName[item.name] = data end
@@ -5632,11 +5619,11 @@ local function buildItemMap()
     end
     local idCount = 0
     for _ in pairs(itemDataById) do idCount = idCount + 1 end
-    print("[Data] Загружено по ID: " .. idCount)
+    print("[Data] By ID: " .. idCount)
 end
 buildItemMap()
 
--- ========== НАСТРОЙКИ ==========
+-- ========== Settings ==========
 local SETTINGS = {
     MAX_PER_SHOP = 15,
     MAX_TOTAL = 15,
@@ -5659,7 +5646,7 @@ local SETTINGS = {
     ESP_MAX_DIST = 250,
 }
 
--- ========== ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ==========
+-- ========== Colors & Helpers ==========
 local RARITY_COLORS = {
     common = Color3.fromRGB(150,150,150),
     uncommon = Color3.fromRGB(50,200,50),
@@ -5674,27 +5661,13 @@ local RARITY_NAMES = {
     epic = "Epic",
     legendary = "Legendary"
 }
-
 local function rarityByPrice(price)
-    local tiers = {
-        { min = 100000, rarity = "legendary" },
-        { min = 50000,  rarity = "epic" },
-        { min = 20000,  rarity = "rare" },
-        { min = 5000,   rarity = "uncommon" },
-        { min = 0,      rarity = "common" }
-    }
-    for _, tier in ipairs(tiers) do
-        if price >= tier.min then return tier.rarity end
-    end
+    local tiers = { { min = 100000, rarity = "legendary" }, { min = 50000, rarity = "epic" }, { min = 20000, rarity = "rare" }, { min = 5000, rarity = "uncommon" }, { min = 0, rarity = "common" } }
+    for _, tier in ipairs(tiers) do if price >= tier.min then return tier.rarity end end
     return "common"
 end
-
 local function log(msg) print("[AutoBuy] " .. msg) end
-local function formatNumber(num)
-    if num >= 1000000 then return string.format("%.1fM", num / 1000000)
-    elseif num >= 1000 then return string.format("%.1fK", num / 1000)
-    else return tostring(num) end
-end
+local function formatNumber(num) if num >= 1000000 then return string.format("%.1fM", num / 1000000) elseif num >= 1000 then return string.format("%.1fK", num / 1000) else return tostring(num) end end
 local function findPosition(obj)
     local current = obj
     for _ = 1, 6 do
@@ -5705,18 +5678,13 @@ local function findPosition(obj)
     return nil
 end
 
--- ===== ИЗВЛЕЧЕНИЕ ID ИЗ МОДЕЛИ =====
 local function getItemIdFromModel(model)
     if not model then return nil end
     local attrs = model:GetAttributes()
     if attrs.id then return tostring(attrs.id) end
     if attrs.assetId then return tostring(attrs.assetId) end
     if attrs.templateId then return tostring(attrs.templateId) end
-    for _, child in ipairs(model:GetChildren()) do
-        if child:IsA("BasePart") and child.Name:match("^%d+$") then
-            return child.Name
-        end
-    end
+    for _, child in ipairs(model:GetChildren()) do if child:IsA("BasePart") and child.Name:match("^%d+$") then return child.Name end end
     local name = model.Name
     local num = name:match("Att_(%d+)")
     if num then return num end
@@ -5736,14 +5704,12 @@ local function getItemDataFromMap(model, itemName)
     local data = itemDataByName[itemName]
     if data then return data end
     for name, d in pairs(itemDataByName) do
-        if itemName:lower():find(name:lower()) or name:lower():find(itemName:lower()) then
-            return d
-        end
+        if itemName:lower():find(name:lower()) or name:lower():find(itemName:lower()) then return d end
     end
     return nil
 end
 
--- ========== КЭШ ЦЕН ==========
+-- ========== Price Cache ==========
 local priceCache = {}
 local ShopRemotes = ReplicatedStorage:FindFirstChild("ShopRemotes")
 local SlotPriceReveal = ShopRemotes and ShopRemotes:FindFirstChild("SlotPriceReveal")
@@ -5754,17 +5720,14 @@ if SlotPriceReveal then
                 local ref = item.slotRef
                 if typeof(ref) == "Instance" and ref:IsA("BasePart") then
                     local slotPath = ref:GetFullName()
-                    priceCache[slotPath] = {
-                        name = tostring(item.name),
-                        price = tonumber(item.price)
-                    }
+                    priceCache[slotPath] = { name = tostring(item.name), price = tonumber(item.price) }
                 end
             end
         end
     end)
 end
 
--- ========== КАРТА МАГАЗИНОВ ==========
+-- ========== Route ==========
 local function buildRoute()
     local shops = {}
     for _, obj in ipairs(Workspace:GetDescendants()) do
@@ -5785,9 +5748,7 @@ local function buildRoute()
         dist[i] = {}
         for j = 1, n do
             if i == j then dist[i][j] = 0 else
-                local path = PathfindingService:CreatePath({
-                    AgentRadius = 2, AgentHeight = 5, AgentCanJump = true, AgentMaxSlope = 45
-                })
+                local path = PathfindingService:CreatePath({ AgentRadius = 2, AgentHeight = 5, AgentCanJump = true, AgentMaxSlope = 45 })
                 local s = pcall(function() path:ComputeAsync(shops[i].position, shops[j].position) end)
                 if s and path.Status == Enum.PathStatus.Success then
                     local wps = path:GetWaypoints()
@@ -5826,7 +5787,7 @@ end
 local route = _G.bestRoute or buildRoute()
 if not route then error("No shops found") end
 
--- ========== СИНХРОНИЗАЦИЯ КОРЗИНЫ ==========
+-- ========== Cart sync ==========
 local function syncCartCount()
     local playerGui = player:FindFirstChild("PlayerGui")
     if not playerGui then return end
@@ -5852,7 +5813,7 @@ local function cartSyncUpdater()
     end
 end
 
--- ========== УМНЫЙ ОБХОД ==========
+-- ========== Walk ==========
 local function walkTo(targetPos)
     if not targetPos or not humanoid or not rootPart then return false end
     local startPos = rootPart.Position
@@ -5942,7 +5903,7 @@ local function walkTo(targetPos)
     return (rootPart.Position - targetPos).Magnitude <= 3
 end
 
--- ========== ПОИСК ПРЕДМЕТОВ ==========
+-- ========== Clothes scan ==========
 local clothes = {}
 local seller = nil
 local running = false
@@ -6031,7 +5992,7 @@ local function findClothes()
     end
     local withPrice = 0
     for _, it in ipairs(clothes) do if it.price then withPrice = withPrice + 1 end end
-    log("Найдено " .. #clothes .. " предметов, с ценой: " .. withPrice)
+    log("Found " .. #clothes .. " items, with price: " .. withPrice)
 end
 
 local function getBuyableItems()
@@ -6054,7 +6015,7 @@ local function getBuyableItems()
     return items
 end
 
--- ========== ESP (подсветка через стены) ==========
+-- ========== ESP ==========
 local espGui, espPool, espLive, espConn
 local function initESP()
     if espGui and espGui.Parent then return end
@@ -6156,22 +6117,20 @@ local function toggleESP(on)
     SETTINGS.ESP_ENABLED = on
     if on then
         initESP()
-        notify("ESP", "Подсветка включена", 3)
+        print("[ESP] ON")
     else
         if espConn then espConn:Disconnect(); espConn = nil end
         if espGui then espGui:Destroy(); espGui = nil end
         espPool = nil; espLive = nil
-        notify("ESP", "Подсветка выключена", 3)
+        print("[ESP] OFF")
     end
 end
 
 local function updateESP()
-    if SETTINGS.ESP_ENABLED then
-        -- просто перерисуем на след. кадре
-    end
+    -- just force redraw on next frame
 end
 
--- ========== ОСТАЛЬНЫЕ ФУНКЦИИ (активация, оплата, цикл) ==========
+-- ========== Interaction ==========
 local function activatePrompt(prompt)
     if not prompt then return false end
     local pos = findPosition(prompt.Parent)
@@ -6304,7 +6263,7 @@ local function waitForRestock()
     end
 end
 
--- ========== ГЛАВНЫЙ ЦИКЛ (ОПЛАТА ПОСЛЕ МАГАЗИНА) ==========
+-- ========== Main Loop ==========
 local function mainLoop()
     task.spawn(cartSyncUpdater)
     while running do
@@ -6318,7 +6277,7 @@ local function mainLoop()
         lastMoveTime = tick()
         findClothes()
         updateList()
-        log("Новый цикл.")
+        log("New cycle.")
 
         local paid = false
         for shopIdx, shop in ipairs(route) do
@@ -6330,11 +6289,10 @@ local function mainLoop()
                 break
             end
 
-            log("=== Заходим в " .. shop.name .. " ===")
+            log("=== Entering " .. shop.name .. " ===")
             walkTo(shop.position)
             task.wait(1)
 
-            -- Собираем все подходящие предметы в этом магазине
             local shopItems = {}
             for _, item in ipairs(clothes) do
                 if item.shop == shop.name and not item.taken and not item.unavailable and shouldBuyItem(item) then
@@ -6342,7 +6300,6 @@ local function mainLoop()
                 end
             end
 
-            -- Сортируем по расстоянию
             local curPos = rootPart.Position
             table.sort(shopItems, function(a, b)
                 local dA = a.position and (a.position - curPos).Magnitude or 9999
@@ -6353,9 +6310,7 @@ local function mainLoop()
             for _, item in ipairs(shopItems) do
                 if not running then break end
                 syncCartCount()
-                if takenCount >= SETTINGS.MAX_TOTAL then
-                    break
-                end
+                if takenCount >= SETTINGS.MAX_TOTAL then break end
                 if item.taken or item.unavailable then continue end
 
                 if item.position then
@@ -6388,16 +6343,13 @@ local function mainLoop()
                 end
             end
 
-            -- После сбора всех предметов в магазине – оплачиваем, если есть что
             if takenCount > 0 then
                 goToPay()
                 paid = true
-                break -- выходим из цикла магазинов, начнём новый цикл
-            end
-
-            if shopIdx == #route then
                 break
             end
+
+            if shopIdx == #route then break end
         end
 
         if not paid and takenCount > 0 then
@@ -6412,7 +6364,7 @@ local function mainLoop()
     end
 end
 
--- ========== GUI (с кнопками редкости и ESP) ==========
+-- ========== GUI ==========
 local screenGui = Instance.new("ScreenGui")
 screenGui.Name = "AutoBuy_v24_ESP"
 screenGui.ResetOnSpawn = false
@@ -6427,13 +6379,13 @@ frame.BorderSizePixel = 0
 frame.Parent = screenGui
 Instance.new("UICorner", frame).CornerRadius = UDim.new(0,10)
 
+-- Title
 local titleBar = Instance.new("Frame")
 titleBar.Size = UDim2.new(1,0,0,55)
 titleBar.BackgroundColor3 = Color3.fromRGB(20,20,20)
 titleBar.BorderSizePixel = 0
 titleBar.Parent = frame
 Instance.new("UICorner", titleBar).CornerRadius = UDim.new(0,10)
-
 local titleLabel = Instance.new("TextLabel")
 titleLabel.Size = UDim2.new(1,-45,1,0)
 titleLabel.Position = UDim2.new(0,10,0,0)
@@ -6444,7 +6396,6 @@ titleLabel.Font = Enum.Font.GothamBold
 titleLabel.TextSize = 14
 titleLabel.TextXAlignment = Enum.TextXAlignment.Left
 titleLabel.Parent = titleBar
-
 local closeBtn = Instance.new("TextButton")
 closeBtn.Size = UDim2.new(0,40,0,40)
 closeBtn.Position = UDim2.new(1,-45,0,7)
@@ -6457,6 +6408,7 @@ closeBtn.Parent = titleBar
 Instance.new("UICorner", closeBtn).CornerRadius = UDim.new(0,8)
 closeBtn.MouseButton1Click:Connect(function() running = false screenGui:Destroy(); toggleESP(false) end)
 
+-- Dragging
 local dragging, dragInput, dragStart, startPos = false, nil, nil, nil
 local function updateDrag(input)
     if dragging then
@@ -6487,8 +6439,9 @@ restockLabel.TextXAlignment = Enum.TextXAlignment.Center
 restockLabel.Parent = frame
 Instance.new("UICorner", restockLabel).CornerRadius = UDim.new(0,8)
 
+-- Filters frame
 local filterFrame = Instance.new("Frame")
-filterFrame.Size = UDim2.new(1,-20,0,120)
+filterFrame.Size = UDim2.new(1,-20,0,150)  -- Increased height for ESP button
 filterFrame.Position = UDim2.new(0,10,0,90)
 filterFrame.BackgroundColor3 = Color3.fromRGB(20,20,20)
 filterFrame.Parent = frame
@@ -6505,6 +6458,7 @@ filterTitle.TextSize = 11
 filterTitle.TextXAlignment = Enum.TextXAlignment.Left
 filterTitle.Parent = filterFrame
 
+-- Min/Max
 local priceMinLabel = Instance.new("TextLabel")
 priceMinLabel.Size = UDim2.new(0.15,0,0,25)
 priceMinLabel.Position = UDim2.new(0,5,0,25)
@@ -6526,10 +6480,7 @@ priceMinInput.Font = Enum.Font.Gotham
 priceMinInput.TextSize = 11
 priceMinInput.Parent = filterFrame
 Instance.new("UICorner", priceMinInput).CornerRadius = UDim.new(0,4)
-priceMinInput.FocusLost:Connect(function()
-    local val = tonumber(priceMinInput.Text)
-    if val then SETTINGS.MIN_PRICE = val updateList(); updateESP() end
-end)
+priceMinInput.FocusLost:Connect(function() local val = tonumber(priceMinInput.Text) if val then SETTINGS.MIN_PRICE = val updateList(); updateESP() end end)
 
 local priceMaxLabel = Instance.new("TextLabel")
 priceMaxLabel.Size = UDim2.new(0.15,0,0,25)
@@ -6552,11 +6503,9 @@ priceMaxInput.Font = Enum.Font.Gotham
 priceMaxInput.TextSize = 11
 priceMaxInput.Parent = filterFrame
 Instance.new("UICorner", priceMaxInput).CornerRadius = UDim.new(0,4)
-priceMaxInput.FocusLost:Connect(function()
-    local val = tonumber(priceMaxInput.Text)
-    if val then SETTINGS.MAX_PRICE = val updateList(); updateESP() end
-end)
+priceMaxInput.FocusLost:Connect(function() local val = tonumber(priceMaxInput.Text) if val then SETTINGS.MAX_PRICE = val updateList(); updateESP() end end)
 
+-- Name/Shop
 local nameLabel = Instance.new("TextLabel")
 nameLabel.Size = UDim2.new(0.2,0,0,25)
 nameLabel.Position = UDim2.new(0,5,0,55)
@@ -6605,7 +6554,7 @@ shopInput.Parent = filterFrame
 Instance.new("UICorner", shopInput).CornerRadius = UDim.new(0,4)
 shopInput.FocusLost:Connect(function() SETTINGS.SHOP_FILTER = shopInput.Text updateList(); updateESP() end)
 
--- Кнопки редкости
+-- Rarity buttons
 local rarityLabel = Instance.new("TextLabel")
 rarityLabel.Size = UDim2.new(0.15,0,0,20)
 rarityLabel.Position = UDim2.new(0,5,0,85)
@@ -6666,16 +6615,15 @@ for i, r in ipairs(rarityList) do
     end)
     table.insert(rarityButtons, btn)
 end
-
 activeRarityBtn = rarityButtons[1]
 updateRarityButtons(activeRarityBtn)
 
--- Кнопка ESP
+-- ESP button
 local espToggle = Instance.new("TextButton")
 espToggle.Size = UDim2.new(0.5, -10, 0, 32)
-espToggle.Position = UDim2.new(0, 5, 0, 122)
+espToggle.Position = UDim2.new(0, 5, 0, 120)
 espToggle.BackgroundColor3 = Color3.fromRGB(40,40,40)
-espToggle.Text = "ESP: ВЫКЛ"
+espToggle.Text = "ESP: OFF"
 espToggle.TextColor3 = Color3.new(1,1,1)
 espToggle.Font = Enum.Font.GothamBold
 espToggle.TextSize = 12
@@ -6684,14 +6632,14 @@ Instance.new("UICorner", espToggle).CornerRadius = UDim.new(0,6)
 espToggle.MouseButton1Click:Connect(function()
     local newVal = not SETTINGS.ESP_ENABLED
     toggleESP(newVal)
-    espToggle.Text = newVal and "ESP: ВКЛ" or "ESP: ВЫКЛ"
+    espToggle.Text = newVal and "ESP: ON" or "ESP: OFF"
     espToggle.BackgroundColor3 = newVal and Color3.fromRGB(80,200,80) or Color3.fromRGB(40,40,40)
 end)
 
--- Остальной GUI
+-- Stats
 local filterStats = Instance.new("TextLabel")
 filterStats.Size = UDim2.new(1,-10,0,20)
-filterStats.Position = UDim2.new(0,10,0,160)
+filterStats.Position = UDim2.new(0,10,0,245)
 filterStats.BackgroundTransparency = 1
 filterStats.Text = "Total: 0 | Filtered: 0"
 filterStats.TextColor3 = Color3.fromRGB(200,200,200)
@@ -6702,7 +6650,7 @@ filterStats.Parent = frame
 
 local statsFrame = Instance.new("Frame")
 statsFrame.Size = UDim2.new(1,-20,0,80)
-statsFrame.Position = UDim2.new(0,10,0,185)
+statsFrame.Position = UDim2.new(0,10,0,270)
 statsFrame.BackgroundColor3 = Color3.fromRGB(25,25,25)
 statsFrame.Parent = frame
 Instance.new("UICorner", statsFrame).CornerRadius = UDim.new(0,8)
@@ -6764,7 +6712,7 @@ moneyLabel.Parent = statsFrame
 
 local startBtn = Instance.new("TextButton")
 startBtn.Size = UDim2.new(1,-20,0,55)
-startBtn.Position = UDim2.new(0,10,0,275)
+startBtn.Position = UDim2.new(0,10,0,360)
 startBtn.BackgroundColor3 = Color3.fromRGB(80,200,80)
 startBtn.Text = "START"
 startBtn.TextColor3 = Color3.new(0,0,0)
@@ -6775,7 +6723,7 @@ Instance.new("UICorner", startBtn).CornerRadius = UDim.new(0,10)
 
 local statusLabel = Instance.new("TextLabel")
 statusLabel.Size = UDim2.new(1,-20,0,30)
-statusLabel.Position = UDim2.new(0,10,0,335)
+statusLabel.Position = UDim2.new(0,10,0,420)
 statusLabel.BackgroundTransparency = 1
 statusLabel.Text = "Ready"
 statusLabel.TextColor3 = Color3.fromRGB(100,255,100)
@@ -6786,7 +6734,7 @@ statusLabel.Parent = frame
 
 local logLabel = Instance.new("TextLabel")
 logLabel.Size = UDim2.new(1,-20,0,100)
-logLabel.Position = UDim2.new(0,10,0,370)
+logLabel.Position = UDim2.new(0,10,0,455)
 logLabel.BackgroundTransparency = 1
 logLabel.Text = " Log:"
 logLabel.TextColor3 = Color3.fromRGB(180,180,180)
@@ -6804,8 +6752,8 @@ local function addLog(msg)
 end
 
 local scrollFrame = Instance.new("ScrollingFrame")
-scrollFrame.Size = UDim2.new(1,-20,1,-460)
-scrollFrame.Position = UDim2.new(0,10,0,475)
+scrollFrame.Size = UDim2.new(1,-20,1,-560)
+scrollFrame.Position = UDim2.new(0,10,0,560)
 scrollFrame.BackgroundColor3 = Color3.fromRGB(20,20,20)
 scrollFrame.BorderSizePixel = 0
 scrollFrame.ScrollBarThickness = 6
@@ -6889,14 +6837,14 @@ local function updateList()
     scrollFrame.CanvasSize = UDim2.new(0,0,0, listLayout.AbsoluteContentSize.Y + 10)
 end
 
--- ========== ЗАПУСК ==========
+-- ========== Start ==========
 startBtn.MouseButton1Click:Connect(function()
     if running then
         running = false
         startBtn.Text = "START"
         startBtn.BackgroundColor3 = Color3.fromRGB(80,200,80)
         toggleESP(false)
-        espToggle.Text = "ESP: ВЫКЛ"
+        espToggle.Text = "ESP: OFF"
         espToggle.BackgroundColor3 = Color3.fromRGB(40,40,40)
     else
         running = true
@@ -6907,7 +6855,7 @@ startBtn.MouseButton1Click:Connect(function()
         updateList()
         if SETTINGS.ESP_ENABLED then
             toggleESP(true)
-            espToggle.Text = "ESP: ВКЛ"
+            espToggle.Text = "ESP: ON"
             espToggle.BackgroundColor3 = Color3.fromRGB(80,200,80)
         end
         task.spawn(function()
@@ -6924,4 +6872,4 @@ findClothes()
 updateStats()
 updateList()
 restockLabel.Text = updateRestockDisplay()
-print("AutoBuy v24 + ESP загружен – фильтры и подсветка работают!")
+print("AutoBuy v24 + ESP loaded. Filters + wallhack ready.")
