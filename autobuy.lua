@@ -6375,7 +6375,10 @@ local function mainLoop()
     if SETTINGS.ESP_ENABLED then
         updateESP()
     end
+        end
     waitForRestock()
+end
+    end
 end
 -- ========== GUI ==========
 local screenGui = Instance.new("ScreenGui")
