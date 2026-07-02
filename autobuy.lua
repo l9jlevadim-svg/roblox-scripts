@@ -6782,7 +6782,6 @@ table.insert(logText, msg)
 if #logText > 7 then table.remove(logText, 1) end
 logLabel.Text = "Log:\n" .. table.concat(logText, "\n")
 end
-
 local scrollFrame = Instance.new("ScrollingFrame")
 scrollFrame.Size = UDim2.new(1,-20,1,-560)
 scrollFrame.Position = UDim2.new(0,10,0,560)
