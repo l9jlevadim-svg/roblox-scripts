@@ -5581,8 +5581,22 @@ u1.SHOP_ITEMS.Xiaomi = {
     }
 };
 -- =====================================================
--- ОСНОВНОЙ СКРИПТ v24 – предварительная фильтрация
+-- 1. Загружаем u1 из строки (вставь сюда весь файл message.txt)
 -- =====================================================
+local u1Code = [[
+-- ВСТАВЬ СЮДА ВСЁ СОДЕРЖИМОЕ ФАЙЛА message.txt
+-- НАЧИНАЯ С local u1 = { ... И ЗАКАНЧИВАЯ return u1;
+]]
+local u1, err = loadstring(u1Code)()
+if not u1 then
+    error("Ошибка загрузки u1: " .. tostring(err))
+end
+print("[OK] u1 загружена. Количество брендов: " .. #u1.SHOP_ITEMS)
+
+-- =====================================================
+-- 2. Основной скрипт v24 с кнопками редкости
+-- =====================================================
+
 local Workspace = game:GetService("Workspace")
 local Players = game:GetService("Players")
 local VirtualUser = game:GetService("VirtualUser")
@@ -5595,7 +5609,7 @@ local humanoid = character:WaitForChild("Humanoid")
 local rootPart = character:WaitForChild("HumanoidRootPart")
 
 print("\n" .. string.rep("=", 80))
-print("AUTOBUY v24 – предварительная фильтрация с u1")
+print("AUTOBUY v24 – с кнопками редкости")
 print(string.rep("=", 80) .. "\n")
 
 -- ========== ПОСТРОЕНИЕ КАРТЫ ДАННЫХ ИЗ u1 ==========
@@ -5662,6 +5676,20 @@ local RARITY_NAMES = {
     epic = "Epic",
     legendary = "Legendary"
 }
+
+local function rarityByPrice(price)
+    local tiers = {
+        { min = 100000, rarity = "legendary" },
+        { min = 50000,  rarity = "epic" },
+        { min = 20000,  rarity = "rare" },
+        { min = 5000,   rarity = "uncommon" },
+        { min = 0,      rarity = "common" }
+    }
+    for _, tier in ipairs(tiers) do
+        if price >= tier.min then return tier.rarity end
+    end
+    return "common"
+end
 
 local function log(msg) print("[AutoBuy] " .. msg) end
 local function formatNumber(num)
@@ -6218,7 +6246,7 @@ local function mainLoop()
     end
 end
 
--- ========== GUI (с фильтром редкости) ==========
+-- ========== GUI (с кнопками редкости) ==========
 local screenGui = Instance.new("ScreenGui")
 screenGui.Name = "AutoBuy_v24"
 screenGui.ResetOnSpawn = false
@@ -6244,7 +6272,7 @@ local titleLabel = Instance.new("TextLabel")
 titleLabel.Size = UDim2.new(1,-45,1,0)
 titleLabel.Position = UDim2.new(0,10,0,0)
 titleLabel.BackgroundTransparency = 1
-titleLabel.Text = " AutoBuy v24 | Фильтры"
+titleLabel.Text = " AutoBuy v24 | Кнопки редкости"
 titleLabel.TextColor3 = Color3.new(1,1,1)
 titleLabel.Font = Enum.Font.GothamBold
 titleLabel.TextSize = 14
@@ -6411,8 +6439,9 @@ shopInput.Parent = filterFrame
 Instance.new("UICorner", shopInput).CornerRadius = UDim.new(0,4)
 shopInput.FocusLost:Connect(function() SETTINGS.SHOP_FILTER = shopInput.Text updateList() end)
 
+-- ===== НОВЫЙ ФИЛЬТР РЕДКОСТИ С КНОПКАМИ =====
 local rarityLabel = Instance.new("TextLabel")
-rarityLabel.Size = UDim2.new(0.2,0,0,25)
+rarityLabel.Size = UDim2.new(0.15,0,0,20)
 rarityLabel.Position = UDim2.new(0,5,0,85)
 rarityLabel.BackgroundTransparency = 1
 rarityLabel.Text = "Rarity:"
@@ -6422,27 +6451,54 @@ rarityLabel.TextSize = 11
 rarityLabel.TextXAlignment = Enum.TextXAlignment.Left
 rarityLabel.Parent = filterFrame
 
-local rarityDropdown = Instance.new("TextBox")
-rarityDropdown.Size = UDim2.new(0.3,0,0,25)
-rarityDropdown.Position = UDim2.new(0.2,5,0,85)
-rarityDropdown.BackgroundColor3 = Color3.fromRGB(40,40,40)
-rarityDropdown.TextColor3 = Color3.new(1,1,1)
-rarityDropdown.Text = "all"
-rarityDropdown.PlaceholderText = "all"
-rarityDropdown.Font = Enum.Font.Gotham
-rarityDropdown.TextSize = 11
-rarityDropdown.Parent = filterFrame
-Instance.new("UICorner", rarityDropdown).CornerRadius = UDim.new(0,4)
-rarityDropdown.FocusLost:Connect(function()
-    local val = rarityDropdown.Text:lower()
-    if val == "all" or val == "common" or val == "uncommon" or val == "rare" or val == "epic" or val == "legendary" then
-        SETTINGS.RARITY_FILTER = val
-        rarityDropdown.Text = val
-        updateList()
-    else
-        rarityDropdown.Text = SETTINGS.RARITY_FILTER
+local rarityBtnFrame = Instance.new("Frame")
+rarityBtnFrame.Size = UDim2.new(0.8, -10, 0, 28)
+rarityBtnFrame.Position = UDim2.new(0.15, 5, 0, 82)
+rarityBtnFrame.BackgroundTransparency = 1
+rarityBtnFrame.Parent = filterFrame
+
+local rarityList = {"all", "common", "uncommon", "rare", "epic", "legendary"}
+local rarityButtons = {}
+local activeRarityBtn = nil
+
+local function updateRarityButtons(selected)
+    for i, btn in ipairs(rarityButtons) do
+        local isActive = (btn == selected)
+        btn.BackgroundColor3 = isActive and Color3.fromRGB(255,255,255) or (rarityList[i] == "all" and Color3.fromRGB(80,80,80) or RARITY_COLORS[rarityList[i]])
+        btn.TextColor3 = isActive and Color3.new(0,0,0) or Color3.new(1,1,1)
+        btn.BorderSizePixel = isActive and 2 or 0
+        btn.BorderColor3 = Color3.fromRGB(255,200,50)
     end
-end)
+end
+
+for i, r in ipairs(rarityList) do
+    local btn = Instance.new("TextButton")
+    btn.Size = UDim2.new(1/#rarityList, -2, 1, -2)
+    btn.Position = UDim2.new((i-1)/#rarityList, 1, 0, 1)
+    btn.BackgroundColor3 = (r == "all") and Color3.fromRGB(80,80,80) or RARITY_COLORS[r]
+    local displayName = (r == "all") and "All" or string.upper(r:sub(1,1)) .. r:sub(2)
+    btn.Text = displayName
+    btn.TextColor3 = Color3.new(1,1,1)
+    btn.Font = Enum.Font.GothamBold
+    btn.TextSize = 10
+    btn.BorderSizePixel = 0
+    btn.Parent = rarityBtnFrame
+    Instance.new("UICorner", btn).CornerRadius = UDim.new(0,4)
+    
+    btn.MouseButton1Click:Connect(function()
+        SETTINGS.RARITY_FILTER = r
+        activeRarityBtn = btn
+        updateRarityButtons(btn)
+        updateList()
+    end)
+    table.insert(rarityButtons, btn)
+end
+
+-- Устанавливаем начальную активную кнопку (All)
+activeRarityBtn = rarityButtons[1]
+updateRarityButtons(activeRarityBtn)
+
+-- ===== КОНЕЦ НОВОГО БЛОКА =====
 
 local filterStats = Instance.new("TextLabel")
 filterStats.Size = UDim2.new(1,-10,0,20)
@@ -6671,4 +6727,4 @@ findClothes()
 updateStats()
 updateList()
 restockLabel.Text = updateRestockDisplay()
-print("AutoBuy v24 загружен – фильтры применяются до движения!")
+print("AutoBuy v24 загружен – кнопки редкости добавлены!")
