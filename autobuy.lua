@@ -6778,9 +6778,9 @@ logLabel.Parent = frame
 
 local logText = {}
 local function addLog(msg)
-    table.insert(logText, msg)
-    if #logText > 7 then table.remove(logText, 1) end
-    logLabel.Text = "Log:\n" .. table.concat(logText, "\n")
+table.insert(logText, msg)
+if #logText > 7 then table.remove(logText, 1) end
+logLabel.Text = "Log:\n" .. table.concat(logText, "\n")
 end
 
 local scrollFrame = Instance.new("ScrollingFrame")
