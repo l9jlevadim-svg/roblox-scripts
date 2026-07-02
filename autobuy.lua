@@ -5581,7 +5581,7 @@ u1.SHOP_ITEMS.Xiaomi = {
     }
 };
 -- =====================================================
--- AUTOBUY v24.0 – предварительная фильтрация из u1
+-- ОСНОВНОЙ СКРИПТ v24 – предварительная фильтрация
 -- =====================================================
 local Workspace = game:GetService("Workspace")
 local Players = game:GetService("Players")
@@ -5595,10 +5595,10 @@ local humanoid = character:WaitForChild("Humanoid")
 local rootPart = character:WaitForChild("HumanoidRootPart")
 
 print("\n" .. string.rep("=", 80))
-print("AUTOBUY v24.0 – предварительная фильтрация")
+print("AUTOBUY v24 – предварительная фильтрация с u1")
 print(string.rep("=", 80) .. "\n")
 
--- ========== ЗАГРУЗКА ДАННЫХ ИЗ u1 ==========
+-- ========== ПОСТРОЕНИЕ КАРТЫ ДАННЫХ ИЗ u1 ==========
 local itemDataById = {}
 local itemDataByName = {}
 local function buildItemMap()
@@ -5642,7 +5642,7 @@ local SETTINGS = {
     MAX_PRICE = 999999,
     NAME_FILTER = "",
     SHOP_FILTER = "",
-    RARITY_FILTER = "all",   -- all, common, uncommon, rare, epic, legendary
+    RARITY_FILTER = "all",
     OBSTACLE_CHECK_DIST = 3.0,
     SIDE_STEP_DIST = 5
 }
@@ -5679,7 +5679,6 @@ local function findPosition(obj)
     return nil
 end
 
--- Получение ID из модели
 local function getItemIdFromModel(model)
     if not model then return nil end
     local attrs = model:GetAttributes()
@@ -5695,7 +5694,6 @@ local function getItemIdFromModel(model)
     return nil
 end
 
--- Получение данных из карты u1
 local function getItemDataFromMap(model, itemName)
     local id = getItemIdFromModel(model)
     if id and itemDataById[id] then return itemDataById[id] end
@@ -5708,7 +5706,7 @@ local function getItemDataFromMap(model, itemName)
     return nil
 end
 
--- ========== КЭШ ЦЕН (для резерва) ==========
+-- ========== КЭШ ЦЕН ==========
 local priceCache = {}
 local ShopRemotes = ReplicatedStorage:FindFirstChild("ShopRemotes")
 local SlotPriceReveal = ShopRemotes and ShopRemotes:FindFirstChild("SlotPriceReveal")
@@ -5817,7 +5815,7 @@ local function cartSyncUpdater()
     end
 end
 
--- ========== УМНЫЙ ОБХОД (без изменений) ==========
+-- ========== УМНЫЙ ОБХОД ==========
 local function walkTo(targetPos)
     if not targetPos or not humanoid or not rootPart then return false end
     local startPos = rootPart.Position
@@ -5907,32 +5905,17 @@ local function walkTo(targetPos)
     return (rootPart.Position - targetPos).Magnitude <= 3
 end
 
--- ========== ПОИСК ПРЕДМЕТОВ С ЦЕНАМИ ИЗ u1 ==========
+-- ========== ПОИСК ПРЕДМЕТОВ ==========
 local clothes = {}
 local seller = nil
 local running = false
 local takenCount = 0
 local paidCount = 0
 local shopLimits = {}
-local lastTakeTime = 0
 local lastMoveTime = 0
 local totalItemsBought = 0
 local totalMoneySpent = 0
 local cycleCount = 0
-
-local function rarityByPrice(price)
-    local tiers = {
-        { min = 100000, rarity = "legendary" },
-        { min = 50000,  rarity = "epic" },
-        { min = 20000,  rarity = "rare" },
-        { min = 5000,   rarity = "uncommon" },
-        { min = 0,      rarity = "common" }
-    }
-    for _, tier in ipairs(tiers) do
-        if price >= tier.min then return tier.rarity end
-    end
-    return "common"
-end
 
 local function shouldBuyItem(item)
     if not item.price then return false end
@@ -5958,7 +5941,6 @@ local function findSeller()
     return nil
 end
 
--- ========== ПОИСК ОДЕЖДЫ С ЗАПОЛНЕНИЕМ ЦЕН ==========
 local function findClothes()
     clothes = {}
     for _, obj in ipairs(Workspace:GetDescendants()) do
@@ -5977,13 +5959,11 @@ local function findClothes()
                 local floor = "1st floor"
                 if position and position.Y > 10 then floor = "2nd floor" end
 
-                -- Получаем данные из u1
                 local data = getItemDataFromMap(parent, rawName)
                 local price = data and data.price or nil
                 local rarity = data and data.rarity or nil
                 local displayName = data and data.name or rawName
 
-                -- Если не нашли, пробуем кэш (на случай если u1 неполный)
                 if not price then
                     local slotPart = parent
                     while slotPart and not slotPart:IsA("BasePart") do slotPart = slotPart.Parent end
@@ -5992,11 +5972,10 @@ local function findClothes()
                     if cached then
                         price = cached.price
                         displayName = cached.name or rawName
-                        rarity = rarity or rarityByPrice(price)
+                        rarity = rarity or (price and rarityByPrice(price))
                     end
                 end
 
-                -- Если цена всё ещё nil, оставляем – позже пропустим через фильтр
                 table.insert(clothes, {
                     obj = obj, parent = parent, name = displayName,
                     position = position, shop = shopName, floor = floor,
@@ -6007,11 +5986,9 @@ local function findClothes()
             end
         end
     end
-    log("Найдено " .. #clothes .. " предметов (цены из u1: " .. 
-        table.concat({select(2, ...)}, ", ") .. ")")
+    log("Найдено " .. #clothes .. " предметов")
 end
 
--- ========== ПОЛУЧЕНИЕ ОТФИЛЬТРОВАННОГО СПИСКА ==========
 local function getBuyableItems()
     local items = {}
     for _, item in ipairs(clothes) do
@@ -6019,7 +5996,6 @@ local function getBuyableItems()
             table.insert(items, item)
         end
     end
-    -- Сортировка: сначала по порядку магазинов, затем по расстоянию
     local shopOrder = {}
     for i, shop in ipairs(route) do shopOrder[shop.name] = i end
     table.sort(items, function(a, b)
@@ -6033,7 +6009,6 @@ local function getBuyableItems()
     return items
 end
 
--- ========== ВЗАИМОДЕЙСТВИЕ С ПРОМПТАМИ И ОПЛАТА ==========
 local function activatePrompt(prompt)
     if not prompt then return false end
     local pos = findPosition(prompt.Parent)
@@ -6166,11 +6141,10 @@ local function waitForRestock()
     end
 end
 
--- ========== ГЛАВНЫЙ ЦИКЛ (с предварительным списком) ==========
+-- ========== ГЛАВНЫЙ ЦИКЛ ==========
 local function mainLoop()
     task.spawn(cartSyncUpdater)
     while running do
-        -- Сброс состояния
         for _, item in ipairs(clothes) do
             item.taken = false
             item.unavailable = false
@@ -6180,8 +6154,8 @@ local function mainLoop()
         takenCount = 0
         lastMoveTime = tick()
         
-        findClothes()  -- обновляем список с ценами из u1
-        local buyable = getBuyableItems()  -- отфильтрованный и отсортированный список
+        findClothes()
+        local buyable = getBuyableItems()
         updateList()
         log("Новый цикл. Доступно для покупки: " .. #buyable)
         
@@ -6251,13 +6225,352 @@ screenGui.ResetOnSpawn = false
 screenGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
 screenGui.Parent = player:WaitForChild("PlayerGui")
 
--- ... (весь GUI такой же, как в предыдущей версии, включая поле Rarity) ...
--- Чтобы не перегружать ответ, я повторю только изменения в GUI: добавлен фильтр редкости.
--- Ниже привожу полный код GUI, но он идентичен предыдущему, за исключением того, что я уже включил rarityDropdown.
--- Для краткости я дам только изменённые части, но лучше скопируй полный скрипт из моего предыдущего ответа, так как он уже содержит все элементы.
--- Здесь я пропущу повторение GUI для экономии места, но в финальном скрипте он должен быть.
+local frame = Instance.new("Frame")
+frame.Size = UDim2.new(0, 750, 0, 880)
+frame.Position = UDim2.new(0, 100, 0, 100)
+frame.BackgroundColor3 = Color3.fromRGB(10,10,10)
+frame.BorderSizePixel = 0
+frame.Parent = screenGui
+Instance.new("UICorner", frame).CornerRadius = UDim.new(0,10)
 
--- ========== ОБНОВЛЕНИЕ СТАТИСТИКИ И СПИСКА ==========
+local titleBar = Instance.new("Frame")
+titleBar.Size = UDim2.new(1,0,0,55)
+titleBar.BackgroundColor3 = Color3.fromRGB(20,20,20)
+titleBar.BorderSizePixel = 0
+titleBar.Parent = frame
+Instance.new("UICorner", titleBar).CornerRadius = UDim.new(0,10)
+
+local titleLabel = Instance.new("TextLabel")
+titleLabel.Size = UDim2.new(1,-45,1,0)
+titleLabel.Position = UDim2.new(0,10,0,0)
+titleLabel.BackgroundTransparency = 1
+titleLabel.Text = " AutoBuy v24 | Фильтры"
+titleLabel.TextColor3 = Color3.new(1,1,1)
+titleLabel.Font = Enum.Font.GothamBold
+titleLabel.TextSize = 14
+titleLabel.TextXAlignment = Enum.TextXAlignment.Left
+titleLabel.Parent = titleBar
+
+local closeBtn = Instance.new("TextButton")
+closeBtn.Size = UDim2.new(0,40,0,40)
+closeBtn.Position = UDim2.new(1,-45,0,7)
+closeBtn.BackgroundColor3 = Color3.fromRGB(220,50,50)
+closeBtn.Text = "X"
+closeBtn.TextColor3 = Color3.new(1,1,1)
+closeBtn.Font = Enum.Font.GothamBold
+closeBtn.TextSize = 18
+closeBtn.Parent = titleBar
+Instance.new("UICorner", closeBtn).CornerRadius = UDim.new(0,8)
+closeBtn.MouseButton1Click:Connect(function() running = false screenGui:Destroy() end)
+
+local dragging, dragInput, dragStart, startPos = false, nil, nil, nil
+local function updateDrag(input)
+    if dragging then
+        local delta = input.Position - dragStart
+        frame.Position = UDim2.new(startPos.X.Scale, startPos.X.Offset + delta.X, startPos.Y.Scale, startPos.Y.Offset + delta.Y)
+    end
+end
+titleBar.InputBegan:Connect(function(input)
+    if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+        dragging = true; dragStart = input.Position; startPos = frame.Position
+        input.Changed:Connect(function() if input.UserInputState == Enum.UserInputState.End then dragging = false end end)
+    end
+end)
+titleBar.InputChanged:Connect(function(input)
+    if input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch then dragInput = input end
+end)
+UIS.InputChanged:Connect(function(input) if input == dragInput then updateDrag(input) end end)
+
+local restockLabel = Instance.new("TextLabel")
+restockLabel.Size = UDim2.new(1,-20,0,30)
+restockLabel.Position = UDim2.new(0,10,0,55)
+restockLabel.BackgroundColor3 = Color3.fromRGB(20,20,20)
+restockLabel.TextColor3 = Color3.fromRGB(255,255,100)
+restockLabel.Font = Enum.Font.GothamBold
+restockLabel.TextSize = 16
+restockLabel.Text = "Restock: --:--"
+restockLabel.TextXAlignment = Enum.TextXAlignment.Center
+restockLabel.Parent = frame
+Instance.new("UICorner", restockLabel).CornerRadius = UDim.new(0,8)
+
+local filterFrame = Instance.new("Frame")
+filterFrame.Size = UDim2.new(1,-20,0,120)
+filterFrame.Position = UDim2.new(0,10,0,90)
+filterFrame.BackgroundColor3 = Color3.fromRGB(20,20,20)
+filterFrame.Parent = frame
+Instance.new("UICorner", filterFrame).CornerRadius = UDim.new(0,8)
+
+local filterTitle = Instance.new("TextLabel")
+filterTitle.Size = UDim2.new(1,-10,0,20)
+filterTitle.Position = UDim2.new(0,5,0,0)
+filterTitle.BackgroundTransparency = 1
+filterTitle.Text = " Price filter (Min / Max)"
+filterTitle.TextColor3 = Color3.new(1,1,1)
+filterTitle.Font = Enum.Font.GothamBold
+filterTitle.TextSize = 11
+filterTitle.TextXAlignment = Enum.TextXAlignment.Left
+filterTitle.Parent = filterFrame
+
+local priceMinLabel = Instance.new("TextLabel")
+priceMinLabel.Size = UDim2.new(0.15,0,0,25)
+priceMinLabel.Position = UDim2.new(0,5,0,25)
+priceMinLabel.BackgroundTransparency = 1
+priceMinLabel.Text = "Min $"
+priceMinLabel.TextColor3 = Color3.new(1,1,1)
+priceMinLabel.Font = Enum.Font.GothamBold
+priceMinLabel.TextSize = 11
+priceMinLabel.TextXAlignment = Enum.TextXAlignment.Left
+priceMinLabel.Parent = filterFrame
+
+local priceMinInput = Instance.new("TextBox")
+priceMinInput.Size = UDim2.new(0.15,0,0,25)
+priceMinInput.Position = UDim2.new(0.15,5,0,25)
+priceMinInput.BackgroundColor3 = Color3.fromRGB(40,40,40)
+priceMinInput.TextColor3 = Color3.new(1,1,1)
+priceMinInput.Text = tostring(SETTINGS.MIN_PRICE)
+priceMinInput.Font = Enum.Font.Gotham
+priceMinInput.TextSize = 11
+priceMinInput.Parent = filterFrame
+Instance.new("UICorner", priceMinInput).CornerRadius = UDim.new(0,4)
+priceMinInput.FocusLost:Connect(function()
+    local val = tonumber(priceMinInput.Text)
+    if val then SETTINGS.MIN_PRICE = val updateList() end
+end)
+
+local priceMaxLabel = Instance.new("TextLabel")
+priceMaxLabel.Size = UDim2.new(0.15,0,0,25)
+priceMaxLabel.Position = UDim2.new(0.35,5,0,25)
+priceMaxLabel.BackgroundTransparency = 1
+priceMaxLabel.Text = "Max $"
+priceMaxLabel.TextColor3 = Color3.new(1,1,1)
+priceMaxLabel.Font = Enum.Font.GothamBold
+priceMaxLabel.TextSize = 11
+priceMaxLabel.TextXAlignment = Enum.TextXAlignment.Left
+priceMaxLabel.Parent = filterFrame
+
+local priceMaxInput = Instance.new("TextBox")
+priceMaxInput.Size = UDim2.new(0.15,0,0,25)
+priceMaxInput.Position = UDim2.new(0.5,5,0,25)
+priceMaxInput.BackgroundColor3 = Color3.fromRGB(40,40,40)
+priceMaxInput.TextColor3 = Color3.new(1,1,1)
+priceMaxInput.Text = tostring(SETTINGS.MAX_PRICE)
+priceMaxInput.Font = Enum.Font.Gotham
+priceMaxInput.TextSize = 11
+priceMaxInput.Parent = filterFrame
+Instance.new("UICorner", priceMaxInput).CornerRadius = UDim.new(0,4)
+priceMaxInput.FocusLost:Connect(function()
+    local val = tonumber(priceMaxInput.Text)
+    if val then SETTINGS.MAX_PRICE = val updateList() end
+end)
+
+local nameLabel = Instance.new("TextLabel")
+nameLabel.Size = UDim2.new(0.2,0,0,25)
+nameLabel.Position = UDim2.new(0,5,0,55)
+nameLabel.BackgroundTransparency = 1
+nameLabel.Text = "Name:"
+nameLabel.TextColor3 = Color3.new(1,1,1)
+nameLabel.Font = Enum.Font.GothamBold
+nameLabel.TextSize = 11
+nameLabel.TextXAlignment = Enum.TextXAlignment.Left
+nameLabel.Parent = filterFrame
+
+local nameInput = Instance.new("TextBox")
+nameInput.Size = UDim2.new(0.3,0,0,25)
+nameInput.Position = UDim2.new(0.2,5,0,55)
+nameInput.BackgroundColor3 = Color3.fromRGB(40,40,40)
+nameInput.TextColor3 = Color3.new(1,1,1)
+nameInput.Text = SETTINGS.NAME_FILTER
+nameInput.PlaceholderText = "all"
+nameInput.Font = Enum.Font.Gotham
+nameInput.TextSize = 11
+nameInput.Parent = filterFrame
+Instance.new("UICorner", nameInput).CornerRadius = UDim.new(0,4)
+nameInput.FocusLost:Connect(function() SETTINGS.NAME_FILTER = nameInput.Text updateList() end)
+
+local shopLabel = Instance.new("TextLabel")
+shopLabel.Size = UDim2.new(0.2,0,0,25)
+shopLabel.Position = UDim2.new(0.5,5,0,55)
+shopLabel.BackgroundTransparency = 1
+shopLabel.Text = "Shop:"
+shopLabel.TextColor3 = Color3.new(1,1,1)
+shopLabel.Font = Enum.Font.GothamBold
+shopLabel.TextSize = 11
+shopLabel.TextXAlignment = Enum.TextXAlignment.Left
+shopLabel.Parent = filterFrame
+
+local shopInput = Instance.new("TextBox")
+shopInput.Size = UDim2.new(0.3,0,0,25)
+shopInput.Position = UDim2.new(0.7,5,0,55)
+shopInput.BackgroundColor3 = Color3.fromRGB(40,40,40)
+shopInput.TextColor3 = Color3.new(1,1,1)
+shopInput.Text = SETTINGS.SHOP_FILTER
+shopInput.PlaceholderText = "all"
+shopInput.Font = Enum.Font.Gotham
+shopInput.TextSize = 11
+shopInput.Parent = filterFrame
+Instance.new("UICorner", shopInput).CornerRadius = UDim.new(0,4)
+shopInput.FocusLost:Connect(function() SETTINGS.SHOP_FILTER = shopInput.Text updateList() end)
+
+local rarityLabel = Instance.new("TextLabel")
+rarityLabel.Size = UDim2.new(0.2,0,0,25)
+rarityLabel.Position = UDim2.new(0,5,0,85)
+rarityLabel.BackgroundTransparency = 1
+rarityLabel.Text = "Rarity:"
+rarityLabel.TextColor3 = Color3.new(1,1,1)
+rarityLabel.Font = Enum.Font.GothamBold
+rarityLabel.TextSize = 11
+rarityLabel.TextXAlignment = Enum.TextXAlignment.Left
+rarityLabel.Parent = filterFrame
+
+local rarityDropdown = Instance.new("TextBox")
+rarityDropdown.Size = UDim2.new(0.3,0,0,25)
+rarityDropdown.Position = UDim2.new(0.2,5,0,85)
+rarityDropdown.BackgroundColor3 = Color3.fromRGB(40,40,40)
+rarityDropdown.TextColor3 = Color3.new(1,1,1)
+rarityDropdown.Text = "all"
+rarityDropdown.PlaceholderText = "all"
+rarityDropdown.Font = Enum.Font.Gotham
+rarityDropdown.TextSize = 11
+rarityDropdown.Parent = filterFrame
+Instance.new("UICorner", rarityDropdown).CornerRadius = UDim.new(0,4)
+rarityDropdown.FocusLost:Connect(function()
+    local val = rarityDropdown.Text:lower()
+    if val == "all" or val == "common" or val == "uncommon" or val == "rare" or val == "epic" or val == "legendary" then
+        SETTINGS.RARITY_FILTER = val
+        rarityDropdown.Text = val
+        updateList()
+    else
+        rarityDropdown.Text = SETTINGS.RARITY_FILTER
+    end
+end)
+
+local filterStats = Instance.new("TextLabel")
+filterStats.Size = UDim2.new(1,-10,0,20)
+filterStats.Position = UDim2.new(0,10,0,215)
+filterStats.BackgroundTransparency = 1
+filterStats.Text = "Total: 0 | Filtered: 0"
+filterStats.TextColor3 = Color3.fromRGB(200,200,200)
+filterStats.Font = Enum.Font.Gotham
+filterStats.TextSize = 10
+filterStats.TextXAlignment = Enum.TextXAlignment.Left
+filterStats.Parent = frame
+
+local statsFrame = Instance.new("Frame")
+statsFrame.Size = UDim2.new(1,-20,0,80)
+statsFrame.Position = UDim2.new(0,10,0,240)
+statsFrame.BackgroundColor3 = Color3.fromRGB(25,25,25)
+statsFrame.Parent = frame
+Instance.new("UICorner", statsFrame).CornerRadius = UDim.new(0,8)
+
+local takenLabel = Instance.new("TextLabel")
+takenLabel.Size = UDim2.new(0.33,-5,0.5,0)
+takenLabel.Position = UDim2.new(0,5,0,0)
+takenLabel.BackgroundTransparency = 1
+takenLabel.Text = " Taken: 0/" .. SETTINGS.MAX_TOTAL
+takenLabel.TextColor3 = Color3.fromRGB(255,200,100)
+takenLabel.Font = Enum.Font.GothamBold
+takenLabel.TextSize = 12
+takenLabel.TextXAlignment = Enum.TextXAlignment.Left
+takenLabel.Parent = statsFrame
+
+local paidLabel = Instance.new("TextLabel")
+paidLabel.Size = UDim2.new(0.33,-5,0.5,0)
+paidLabel.Position = UDim2.new(0.33,5,0,0)
+paidLabel.BackgroundTransparency = 1
+paidLabel.Text = " Paid: 0"
+paidLabel.TextColor3 = Color3.fromRGB(100,200,255)
+paidLabel.Font = Enum.Font.GothamBold
+paidLabel.TextSize = 12
+paidLabel.TextXAlignment = Enum.TextXAlignment.Left
+paidLabel.Parent = statsFrame
+
+local totalLabel = Instance.new("TextLabel")
+totalLabel.Size = UDim2.new(0.33,-5,0.5,0)
+totalLabel.Position = UDim2.new(0.66,5,0,0)
+totalLabel.BackgroundTransparency = 1
+totalLabel.Text = " Cycles: 0"
+totalLabel.TextColor3 = Color3.fromRGB(200,200,200)
+totalLabel.Font = Enum.Font.GothamBold
+totalLabel.TextSize = 12
+totalLabel.TextXAlignment = Enum.TextXAlignment.Left
+totalLabel.Parent = statsFrame
+
+local itemsLabel = Instance.new("TextLabel")
+itemsLabel.Size = UDim2.new(0.5,-5,0.5,0)
+itemsLabel.Position = UDim2.new(0,5,0.5,0)
+itemsLabel.BackgroundTransparency = 1
+itemsLabel.Text = " Bought: 0"
+itemsLabel.TextColor3 = Color3.fromRGB(180,180,180)
+itemsLabel.Font = Enum.Font.Gotham
+itemsLabel.TextSize = 11
+itemsLabel.TextXAlignment = Enum.TextXAlignment.Left
+itemsLabel.Parent = statsFrame
+
+local moneyLabel = Instance.new("TextLabel")
+moneyLabel.Size = UDim2.new(0.5,-5,0.5,0)
+moneyLabel.Position = UDim2.new(0.5,5,0.5,0)
+moneyLabel.BackgroundTransparency = 1
+moneyLabel.Text = " Spent: $0"
+moneyLabel.TextColor3 = Color3.fromRGB(180,180,180)
+moneyLabel.Font = Enum.Font.Gotham
+moneyLabel.TextSize = 11
+moneyLabel.TextXAlignment = Enum.TextXAlignment.Left
+moneyLabel.Parent = statsFrame
+
+local startBtn = Instance.new("TextButton")
+startBtn.Size = UDim2.new(1,-20,0,55)
+startBtn.Position = UDim2.new(0,10,0,330)
+startBtn.BackgroundColor3 = Color3.fromRGB(80,200,80)
+startBtn.Text = "START"
+startBtn.TextColor3 = Color3.new(0,0,0)
+startBtn.Font = Enum.Font.GothamBold
+startBtn.TextSize = 16
+startBtn.Parent = frame
+Instance.new("UICorner", startBtn).CornerRadius = UDim.new(0,10)
+
+local statusLabel = Instance.new("TextLabel")
+statusLabel.Size = UDim2.new(1,-20,0,30)
+statusLabel.Position = UDim2.new(0,10,0,390)
+statusLabel.BackgroundTransparency = 1
+statusLabel.Text = "Ready"
+statusLabel.TextColor3 = Color3.fromRGB(100,255,100)
+statusLabel.Font = Enum.Font.GothamBold
+statusLabel.TextSize = 14
+statusLabel.TextXAlignment = Enum.TextXAlignment.Left
+statusLabel.Parent = frame
+
+local logLabel = Instance.new("TextLabel")
+logLabel.Size = UDim2.new(1,-20,0,100)
+logLabel.Position = UDim2.new(0,10,0,425)
+logLabel.BackgroundTransparency = 1
+logLabel.Text = " Log:"
+logLabel.TextColor3 = Color3.fromRGB(180,180,180)
+logLabel.Font = Enum.Font.Code
+logLabel.TextSize = 11
+logLabel.TextXAlignment = Enum.TextXAlignment.Left
+logLabel.TextYAlignment = Enum.TextYAlignment.Top
+logLabel.Parent = frame
+
+local logText = {}
+local function addLog(msg)
+    table.insert(logText, msg)
+    if #logText > 7 then table.remove(logText, 1) end
+    logLabel.Text = "Log:\n" .. table.concat(logText, "\n")
+end
+
+local scrollFrame = Instance.new("ScrollingFrame")
+scrollFrame.Size = UDim2.new(1,-20,1,-540)
+scrollFrame.Position = UDim2.new(0,10,0,530)
+scrollFrame.BackgroundColor3 = Color3.fromRGB(20,20,20)
+scrollFrame.BorderSizePixel = 0
+scrollFrame.ScrollBarThickness = 6
+scrollFrame.Parent = frame
+Instance.new("UICorner", scrollFrame).CornerRadius = UDim.new(0,8)
+
+local listLayout = Instance.new("UIListLayout")
+listLayout.Padding = UDim.new(0,4)
+listLayout.Parent = scrollFrame
+
 local function updateStats()
     takenLabel.Text = "Taken: " .. takenCount .. "/" .. SETTINGS.MAX_TOTAL
     paidLabel.Text = "Paid: " .. paidCount
@@ -6277,15 +6590,56 @@ local function getFilteredItems()
 end
 
 local function updateList()
-    -- очистка и перерисовка списка (как в предыдущей версии)
     for _, child in ipairs(scrollFrame:GetChildren()) do
         if child:IsA("Frame") then child:Destroy() end
     end
     local filtered = getFilteredItems()
     filterStats.Text = "Total: " .. #clothes .. " | Filtered: " .. #filtered
     for i, item in ipairs(filtered) do
-        -- создание элементов списка (полностью аналогично предыдущему)
-        -- ...
+        local itemFrame = Instance.new("Frame")
+        itemFrame.Size = UDim2.new(1,-10,0,65)
+        itemFrame.BackgroundColor3 = Color3.fromRGB(35,35,35)
+        itemFrame.LayoutOrder = i
+        itemFrame.Parent = scrollFrame
+        Instance.new("UICorner", itemFrame).CornerRadius = UDim.new(0,8)
+
+        local rarityBar = Instance.new("Frame")
+        rarityBar.Size = UDim2.new(0,4,1,0)
+        rarityBar.BackgroundColor3 = RARITY_COLORS[item.rarity] or Color3.fromRGB(150,150,150)
+        rarityBar.Parent = itemFrame
+
+        local nameLabel = Instance.new("TextLabel")
+        nameLabel.Size = UDim2.new(1,-15,0,20)
+        nameLabel.Position = UDim2.new(0,10,0,3)
+        nameLabel.BackgroundTransparency = 1
+        nameLabel.Text = item.name or "??"
+        nameLabel.TextColor3 = Color3.new(1,1,1)
+        nameLabel.Font = Enum.Font.GothamBold
+        nameLabel.TextSize = 12
+        nameLabel.TextXAlignment = Enum.TextXAlignment.Left
+        nameLabel.Parent = itemFrame
+
+        local infoLabel = Instance.new("TextLabel")
+        infoLabel.Size = UDim2.new(1,-15,0,18)
+        infoLabel.Position = UDim2.new(0,10,0,23)
+        infoLabel.BackgroundTransparency = 1
+        infoLabel.Text = item.shop .. " | " .. item.floor .. " | $" .. (item.price or "?")
+        infoLabel.TextColor3 = Color3.fromRGB(180,180,180)
+        infoLabel.Font = Enum.Font.Gotham
+        infoLabel.TextSize = 10
+        infoLabel.TextXAlignment = Enum.TextXAlignment.Left
+        infoLabel.Parent = itemFrame
+
+        local rarityLabel = Instance.new("TextLabel")
+        rarityLabel.Size = UDim2.new(1,-15,0,18)
+        rarityLabel.Position = UDim2.new(0,10,0,41)
+        rarityLabel.BackgroundTransparency = 1
+        rarityLabel.Text = RARITY_NAMES[item.rarity] or "?"
+        rarityLabel.TextColor3 = RARITY_COLORS[item.rarity] or Color3.fromRGB(150,150,150)
+        rarityLabel.Font = Enum.Font.GothamBold
+        rarityLabel.TextSize = 10
+        rarityLabel.TextXAlignment = Enum.TextXAlignment.Left
+        rarityLabel.Parent = itemFrame
     end
     scrollFrame.CanvasSize = UDim2.new(0,0,0, listLayout.AbsoluteContentSize.Y + 10)
 end
@@ -6317,4 +6671,4 @@ findClothes()
 updateStats()
 updateList()
 restockLabel.Text = updateRestockDisplay()
-print("AutoBuy v24.0 загружен – фильтры применяются до движения!")
+print("AutoBuy v24 загружен – фильтры применяются до движения!")
