@@ -6014,9 +6014,8 @@ local function getBuyableItems()
     end)
     return items
 end
-
 -- ====================================================================
--- НОВЫЙ ESP (скопирован из TSUM, адаптирован под данные)
+-- ESP (TSUM-style) с автоматическим включением
 -- ====================================================================
 local espGui, espPool, espLive, espConn
 
@@ -6031,6 +6030,136 @@ local function ensureEspScreen()
     espLive = {}
 end
 
+local function acquireEspWidget()
+    local w = table.remove(espPool)
+    if w then return w end
+    local holder = Instance.new("Frame")
+    holder.BackgroundTransparency = 1
+    holder.Size = UDim2.fromOffset(0, 0)
+    holder.Visible = false
+    holder.Parent = espGui
+
+    local tracer = Instance.new("Frame")
+    tracer.BorderSizePixel = 0
+    tracer.AnchorPoint = Vector2.new(0.5, 0.5)
+    tracer.ZIndex = 2
+    tracer.Parent = holder
+
+    local box = Instance.new("Frame")
+    box.BackgroundTransparency = 1
+    box.ZIndex = 3
+    box.Parent = holder
+    local stroke = Instance.new("UIStroke")
+    stroke.Thickness = 2
+    stroke.Parent = box
+
+    local label = Instance.new("TextLabel")
+    label.BackgroundTransparency = 1
+    label.Size = UDim2.fromOffset(300, 36)
+    label.TextWrapped = true
+    label.AnchorPoint = Vector2.new(0.5, 1)
+    label.Font = Enum.Font.GothamBold
+    label.TextSize = 12
+    label.TextStrokeTransparency = 0.3
+    label.ZIndex = 4
+    label.Parent = holder
+
+    return { holder = holder, tracer = tracer, box = box, stroke = stroke, label = label }
+end
+
+local function releaseEspWidget(w)
+    w.holder.Visible = false
+    table.insert(espPool, w)
+end
+
+local function drawLine(frame, fromPos, toPos, thickness, color)
+    local dx = toPos.X - fromPos.X
+    local dy = toPos.Y - fromPos.Y
+    local dist = math.sqrt(dx*dx + dy*dy)
+    if dist < 2 then
+        frame.Visible = false
+        return
+    end
+    frame.Visible = true
+    frame.BackgroundColor3 = color
+    frame.Size = UDim2.fromOffset(dist, thickness)
+    frame.Position = UDim2.fromOffset((fromPos.X + toPos.X) / 2, (fromPos.Y + toPos.Y) / 2)
+    frame.Rotation = math.deg(math.atan2(dy, dx))
+end
+
+local function renderESP()
+    if not SETTINGS.ESP_ENABLED then
+        for holder, w in pairs(espLive) do
+            releaseEspWidget(w)
+        end
+        espLive = {}
+        return
+    end
+    ensureEspScreen()
+    local camera = workspace.CurrentCamera
+    local hrp = rootPart
+    if not camera or not hrp then return end
+
+    local active = {}
+    local tracerFrom = Vector2.new(camera.ViewportSize.X * 0.5, camera.ViewportSize.Y - 6)
+    local items = getBuyableItems()
+
+    for _, item in ipairs(items) do
+        if not item.position then continue end
+        local worldPos = item.position + Vector3.new(0, 2.2, 0)
+        if (worldPos - hrp.Position).Magnitude > SETTINGS.ESP_MAX_DIST then continue end
+        local screenPos, onScreen = camera:WorldToViewportPoint(worldPos)
+        if not onScreen or screenPos.Z <= 0 then continue end
+        local color = RARITY_COLORS[item.rarity] or Color3.fromRGB(200,200,200)
+        local w = acquireEspWidget()
+        espLive[w.holder] = w
+        active[w.holder] = true
+        local center = Vector2.new(screenPos.X, screenPos.Y)
+        local boxSize = math.clamp(3200 / math.max(screenPos.Z, 1), 24, 140)
+        drawLine(w.tracer, tracerFrom, center, 2, color)
+        w.box.Visible = true
+        w.box.Size = UDim2.fromOffset(boxSize, boxSize)
+        w.box.Position = UDim2.fromOffset(center.X - boxSize/2, center.Y - boxSize/2)
+        w.stroke.Color = color
+        local labelText = string.format("[%s] %s $%s", (RARITY_NAMES[item.rarity] or "?"), item.name, item.price or "?")
+        if #labelText > 40 then labelText = labelText:sub(1,38)..".." end
+        w.label.Text = labelText
+        w.label.TextColor3 = color
+        w.label.Position = UDim2.fromOffset(center.X, center.Y - boxSize/2 - 4)
+        w.label.Visible = true
+        w.holder.Visible = true
+    end
+
+    for holder in pairs(espLive) do
+        if not active[holder] then
+            releaseEspWidget(espLive[holder])
+            espLive[holder] = nil
+        end
+    end
+end
+
+local function toggleESP(on)
+    SETTINGS.ESP_ENABLED = on
+    if on then
+        if not espConn then
+            espConn = RunService.RenderStepped:Connect(renderESP)
+        end
+        print("[ESP] ON")
+    else
+        if espConn then
+            espConn:Disconnect()
+            espConn = nil
+        end
+        if espGui then espGui:Destroy(); espGui = nil end
+        espPool = {}
+        espLive = {}
+        print("[ESP] OFF")
+    end
+end
+
+local function updateESP()
+    -- nothing, just refresh
+end
 local function acquireEspWidget()
     local w = table.remove(espPool)
     if w then return w end
@@ -6910,3 +7039,11 @@ updateStats()
 updateList()
 restockLabel.Text = updateRestockDisplay()
 print("AutoBuy v24 + ESP (TSUM-style) loaded. Filters + wallhack ready.")
+task.delay(2, function()
+    toggleESP(true)
+    -- если у тебя есть кнопка espToggle, обнови её
+    if espToggle then
+        espToggle.Text = "ESP: ON"
+        espToggle.BackgroundColor3 = Color3.fromRGB(80,200,80)
+    end
+end)
