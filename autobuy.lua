@@ -5580,11 +5580,29 @@ u1.SHOP_ITEMS.Xiaomi = {
         economyProfile = "safe"
     }
 };
-print("[OK] u1 loaded.")
-local brandCount = 0
-if u1 and u1.SHOP_ITEMS then for _ in pairs(u1.SHOP_ITEMS) do brandCount = brandCount + 1 end end
-print("Brands: " .. brandCount)
-if brandCount == 0 then error("u1.SHOP_ITEMS is empty") end
+local u1 = {
+    RARITIES = {
+        Common = { displayName = "Common", color = Color3.fromRGB(180, 180, 180) },
+        Uncommon = { displayName = "Uncommon", color = Color3.fromRGB(80, 200, 80) },
+        Rare = { displayName = "Rare", color = Color3.fromRGB(80, 150, 255) },
+        Epic = { displayName = "Epic", color = Color3.fromRGB(180, 80, 255) },
+        Legendary = { displayName = "Legendary", color = Color3.fromRGB(255, 180, 0) }
+    },
+    SHOP_ITEMS = {
+        Street = {
+            Shirts = {
+                { id = 1352050969, type = "Shirt", name = "Белая футболка", rarity = "Common", fairPrice = 120, spawnChance = 55 },
+                { id = 6174845177, type = "Shirt", name = "Черная футболка", rarity = "Common", fairPrice = 120, spawnChance = 55 },
+                { id = 6384915788, type = "Shirt", name = "Drip футболка", rarity = "Rare", fairPrice = 1200, spawnChance = 8 },
+                { id = 12001043365, type = "Shirt", name = "Золотая цепь", rarity = "Epic", fairPrice = 3800, spawnChance = 1.5 },
+            },
+            Pants = {
+                { id = 8425198358, type = "Pants", name = "Черные джинсы", rarity = "Common", fairPrice = 150, spawnChance = 50 },
+                { id = 9367316394, type = "Pants", name = "Синие джинсы", rarity = "Common", fairPrice = 150, spawnChance = 50 },
+            }
+        }
+    }
+}
 
 local Workspace = game:GetService("Workspace")
 local Players = game:GetService("Players")
@@ -5604,22 +5622,26 @@ print("AUTOBUY v24 + ESP loaded.")
 local itemDataById = {}
 local itemDataByTemplate = {}
 local itemDataByName = {}
+
 local function buildItemMap()
     for brand, categories in pairs(u1.SHOP_ITEMS) do
         for category, items in pairs(categories) do
             for _, item in ipairs(items) do
                 local id = tostring(item.id)
                 local template = item.templateId and tostring(item.templateId) or nil
-                local data = { name = item.name, price = item.fairPrice, rarity = item.rarity:lower(), type = item.type, brand = brand }
+                local data = { 
+                    name = item.name, 
+                    price = item.fairPrice, 
+                    rarity = item.rarity:lower(), 
+                    type = item.type, 
+                    brand = brand 
+                }
                 if id and id ~= "" then itemDataById[id] = data end
                 if template then itemDataByTemplate[template] = data end
                 if not itemDataByName[item.name] then itemDataByName[item.name] = data end
             end
         end
     end
-    local idCount = 0
-    for _ in pairs(itemDataById) do idCount = idCount + 1 end
-    print("[Data] By ID: " .. idCount)
 end
 buildItemMap()
 
@@ -5644,6 +5666,7 @@ local SETTINGS = {
     SIDE_STEP_DIST = 5,
     ESP_ENABLED = false,
     ESP_MAX_DIST = 250,
+    ESP_AUTO_BUY = false,  -- Автопокупка через ESP
 }
 
 -- ========== Colors & Helpers ==========
@@ -5654,6 +5677,7 @@ local RARITY_COLORS = {
     epic = Color3.fromRGB(180,50,255),
     legendary = Color3.fromRGB(255,200,50)
 }
+
 local RARITY_NAMES = {
     common = "Common",
     uncommon = "Uncommon",
@@ -5661,13 +5685,15 @@ local RARITY_NAMES = {
     epic = "Epic",
     legendary = "Legendary"
 }
-local function rarityByPrice(price)
-    local tiers = { { min = 100000, rarity = "legendary" }, { min = 50000, rarity = "epic" }, { min = 20000, rarity = "rare" }, { min = 5000, rarity = "uncommon" }, { min = 0, rarity = "common" } }
-    for _, tier in ipairs(tiers) do if price >= tier.min then return tier.rarity end end
-    return "common"
-end
+
 local function log(msg) print("[AutoBuy] " .. msg) end
-local function formatNumber(num) if num >= 1000000 then return string.format("%.1fM", num / 1000000) elseif num >= 1000 then return string.format("%.1fK", num / 1000) else return tostring(num) end end
+
+local function formatNumber(num) 
+    if num >= 1000000 then return string.format("%.1fM", num / 1000000) 
+    elseif num >= 1000 then return string.format("%.1fK", num / 1000) 
+    else return tostring(num) end 
+end
+
 local function findPosition(obj)
     local current = obj
     for _ = 1, 6 do
@@ -5684,7 +5710,9 @@ local function getItemIdFromModel(model)
     if attrs.id then return tostring(attrs.id) end
     if attrs.assetId then return tostring(attrs.assetId) end
     if attrs.templateId then return tostring(attrs.templateId) end
-    for _, child in ipairs(model:GetChildren()) do if child:IsA("BasePart") and child.Name:match("^%d+$") then return child.Name end end
+    for _, child in ipairs(model:GetChildren()) do 
+        if child:IsA("BasePart") and child.Name:match("^%d+$") then return child.Name end 
+    end
     local name = model.Name
     local num = name:match("Att_(%d+)")
     if num then return num end
@@ -5713,6 +5741,7 @@ end
 local priceCache = {}
 local ShopRemotes = ReplicatedStorage:FindFirstChild("ShopRemotes")
 local SlotPriceReveal = ShopRemotes and ShopRemotes:FindFirstChild("SlotPriceReveal")
+
 if SlotPriceReveal then
     SlotPriceReveal.OnClientEvent:Connect(function(payload)
         if type(payload) == "table" then
@@ -5747,7 +5776,8 @@ local function buildRoute()
     for i = 1, n do
         dist[i] = {}
         for j = 1, n do
-            if i == j then dist[i][j] = 0 else
+            if i == j then dist[i][j] = 0 
+            else
                 local path = PathfindingService:CreatePath({ AgentRadius = 2, AgentHeight = 5, AgentCanJump = true, AgentMaxSlope = 45 })
                 local s = pcall(function() path:ComputeAsync(shops[i].position, shops[j].position) end)
                 if s and path.Status == Enum.PathStatus.Success then
@@ -5784,6 +5814,7 @@ local function buildRoute()
     print("Route built: " .. #final .. " shops")
     return final
 end
+
 local route = _G.bestRoute or buildRoute()
 if not route then error("No shops found") end
 
@@ -5806,6 +5837,7 @@ local function syncCartCount()
         end
     end
 end
+
 local function cartSyncUpdater()
     while running do
         syncCartCount()
@@ -5819,43 +5851,44 @@ local function walkTo(targetPos)
     local startPos = rootPart.Position
     local totalDistance = (targetPos - startPos).Magnitude
     if totalDistance <= 3 then return true end
-
+    
     local originalWalkSpeed = humanoid.WalkSpeed
     local originalJumpPower = humanoid.JumpPower
     humanoid.WalkSpeed = SETTINGS.WALK_SPEED
     humanoid.JumpPower = SETTINGS.JUMP_POWER
-
+    
     local lastPos = rootPart.Position
     local stuckTime = 0
     local startTime = tick()
     local maxTime = math.min(totalDistance * 0.8, 60)
-
+    
     local avoidDir = nil
     local avoidTimer = 0
     local rayParams = RaycastParams.new()
     rayParams.FilterType = Enum.RaycastFilterType.Blacklist
     rayParams.FilterDescendantsInstances = {character}
-
+    
     while tick() - startTime < maxTime do
         if not running then break end
         local pos = rootPart.Position
         if (pos - targetPos).Magnitude <= 3 then break end
-
+        
         local moved = (pos - lastPos).Magnitude
         if moved < 0.3 then stuckTime += 0.15 else stuckTime = 0; avoidDir = nil; avoidTimer = 0 end
         lastPos = pos
-
+        
         local dirToTarget = (targetPos - pos).Unit
         local low = pos + Vector3.new(0, 1.5, 0)
         local mid = pos + Vector3.new(0, 2.5, 0)
         local high = pos + Vector3.new(0, 3.5, 0)
+        
         local rayLow = workspace:Raycast(low, dirToTarget * SETTINGS.OBSTACLE_CHECK_DIST, rayParams)
         local rayMid = workspace:Raycast(mid, dirToTarget * SETTINGS.OBSTACLE_CHECK_DIST, rayParams)
         local rayHigh = workspace:Raycast(high, dirToTarget * SETTINGS.OBSTACLE_CHECK_DIST, rayParams)
-
+        
         local onlyHigh = rayHigh and not rayMid and not rayLow
         local bodyBlocked = rayMid or rayLow
-
+        
         if not bodyBlocked and not onlyHigh then
             humanoid:MoveTo(targetPos)
         elseif onlyHigh then
@@ -5891,12 +5924,14 @@ local function walkTo(targetPos)
                 humanoid:MoveTo(targetPos)
             end
         end
+        
         if stuckTime >= 2 and moved < 0.1 then
             humanoid:ChangeState(Enum.HumanoidStateType.Jumping)
             stuckTime = 0
         end
         task.wait(0.1)
     end
+    
     humanoid.WalkSpeed = originalWalkSpeed
     humanoid.JumpPower = originalJumpPower
     if (rootPart.Position - targetPos).Magnitude > 3 then humanoid:MoveTo(targetPos); task.wait(0.5) end
@@ -5962,13 +5997,13 @@ local function findClothes()
                 end
                 local floor = "1st floor"
                 if position and position.Y > 10 then floor = "2nd floor" end
-
+                
                 local data = getItemDataFromMap(parent, rawName)
                 local price = data and data.price or nil
                 local rarity = data and data.rarity or nil
                 local displayName = data and data.name or rawName
                 local brand = data and data.brand or nil
-
+                
                 if not price then
                     local slotPart = parent
                     while slotPart and not slotPart:IsA("BasePart") do slotPart = slotPart.Parent end
@@ -5980,7 +6015,7 @@ local function findClothes()
                         rarity = rarity or (price and rarityByPrice(price))
                     end
                 end
-
+                
                 table.insert(clothes, {
                     obj = obj, parent = parent, name = displayName,
                     position = position, shop = shopName, brand = brand, floor = floor,
@@ -6015,8 +6050,10 @@ local function getBuyableItems()
     return items
 end
 
--- ========== ESP ==========
+-- ========== ESP (ИСПРАВЛЕННЫЙ) ==========
 local espGui, espPool, espLive, espConn
+local espItems = {}  -- Список подсвеченных предметов
+
 local function initESP()
     if espGui and espGui.Parent then return end
     espGui = Instance.new("ScreenGui")
@@ -6026,42 +6063,56 @@ local function initESP()
     espGui.Parent = player:WaitForChild("PlayerGui")
     espPool = {}
     espLive = {}
+    
     if espConn then espConn:Disconnect() end
     espConn = RunService.RenderStepped:Connect(function()
         if not SETTINGS.ESP_ENABLED then return end
+        
         local camera = workspace.CurrentCamera
         local hrp = rootPart
         if not camera or not hrp then return end
+        
         local active = {}
         local center = camera.ViewportSize / 2
         local tracerFrom = Vector2.new(center.X, camera.ViewportSize.Y - 6)
+        
+        -- Получаем предметы по фильтрам
         local filtered = getBuyableItems()
+        espItems = filtered  -- Сохраняем для автопокупки
+        
         for _, item in ipairs(filtered) do
             if not item.position then continue end
             local worldPos = item.position + Vector3.new(0, 2.2, 0)
             if (worldPos - hrp.Position).Magnitude > SETTINGS.ESP_MAX_DIST then continue end
+            
             local screenPos, onScreen = camera:WorldToViewportPoint(worldPos)
             if not onScreen or screenPos.Z <= 0 then continue end
+            
             local color = RARITY_COLORS[item.rarity] or Color3.fromRGB(200,200,200)
             local w = table.remove(espPool)
+            
             if not w then
                 w = {}
                 w.holder = Instance.new("Frame")
                 w.holder.BackgroundTransparency = 1
                 w.holder.Size = UDim2.fromOffset(0,0)
                 w.holder.Parent = espGui
+                
                 w.tracer = Instance.new("Frame")
                 w.tracer.BorderSizePixel = 0
                 w.tracer.AnchorPoint = Vector2.new(0.5,0.5)
                 w.tracer.ZIndex = 2
                 w.tracer.Parent = w.holder
+                
                 w.box = Instance.new("Frame")
                 w.box.BackgroundTransparency = 1
                 w.box.ZIndex = 3
                 w.box.Parent = w.holder
+                
                 w.stroke = Instance.new("UIStroke")
                 w.stroke.Thickness = 2
                 w.stroke.Parent = w.box
+                
                 w.label = Instance.new("TextLabel")
                 w.label.BackgroundTransparency = 1
                 w.label.Size = UDim2.fromOffset(300,36)
@@ -6073,10 +6124,14 @@ local function initESP()
                 w.label.ZIndex = 4
                 w.label.Parent = w.holder
             end
+            
             espLive[w.holder] = w
             active[w.holder] = true
+            
             local pos = Vector2.new(screenPos.X, screenPos.Y)
             local size = math.clamp(3200 / math.max(screenPos.Z, 1), 24, 140)
+            
+            -- tracer
             local dx = pos.X - tracerFrom.X
             local dy = pos.Y - tracerFrom.Y
             local dist = math.sqrt(dx*dx + dy*dy)
@@ -6089,18 +6144,25 @@ local function initESP()
             else
                 w.tracer.Visible = false
             end
+            
             w.box.Visible = true
             w.box.Size = UDim2.fromOffset(size, size)
             w.box.Position = UDim2.fromOffset(pos.X - size/2, pos.Y - size/2)
             w.stroke.Color = color
-            local labelText = string.format("[%s] %s $%s", (RARITY_NAMES[item.rarity] or "?"), item.name, item.price or "?")
+            
+            local labelText = string.format("[%s] %s $%s", 
+                (RARITY_NAMES[item.rarity] or "?"), 
+                item.name, 
+                item.price or "?")
             if #labelText > 40 then labelText = labelText:sub(1,38)..".." end
+            
             w.label.Text = labelText
             w.label.TextColor3 = color
             w.label.Position = UDim2.fromOffset(pos.X, pos.Y - size/2 - 4)
             w.label.Visible = true
             w.holder.Visible = true
         end
+        
         for holder in pairs(espLive) do
             if not active[holder] then
                 local w = espLive[holder]
@@ -6120,20 +6182,13 @@ local function toggleESP(on)
         if espConn then espConn:Disconnect(); espConn = nil end
         if espGui then espGui:Destroy(); espGui = nil end
         espPool = nil; espLive = nil
+        espItems = {}
     end
 end
 
 local function updateESP()
     if not SETTINGS.ESP_ENABLED then return end
-    if espLive then
-        for holder, w in pairs(espLive) do
-            if w then
-                w.holder.Visible = false
-                table.insert(espPool, w)
-            end
-        end
-        espLive = {}
-    end
+    -- Просто обновляем список - RenderStepped сам перерисует
 end
 
 -- ========== Interaction ==========
@@ -6153,6 +6208,7 @@ end
 local function tryTakeItem(item)
     if item.unavailable then return false end
     if not item.obj or not item.obj.Parent then item.unavailable = true; return false end
+    
     for attempt = 1, SETTINGS.MAX_RETRIES do
         if not running then return false end
         if attempt > 1 then
@@ -6163,6 +6219,7 @@ local function tryTakeItem(item)
             return true
         end
     end
+    
     item.failedAttempts = item.failedAttempts + 1
     if item.failedAttempts >= SETTINGS.MAX_FAILED_ATTEMPTS then item.unavailable = true end
     return false
@@ -6172,6 +6229,7 @@ local function pay()
     local confirm = ReplicatedStorage:FindFirstChild("ShopRemotes", true)
     if confirm then confirm = confirm:FindFirstChild("ConfirmPurchase") end
     if confirm and pcall(function() confirm:FireServer() end) then return true end
+    
     if player:FindFirstChild("PlayerGui") then
         local gui = player.PlayerGui:FindFirstChild("ShopGUI")
         if gui then
@@ -6192,9 +6250,11 @@ local function goToPay()
     if takenCount == 0 then return end
     findSeller()
     if not seller then log("No seller") return end
+    
     if seller.position then walkTo(seller.position) task.wait(1) end
     activatePrompt(seller.obj)
     task.wait(2)
+    
     local paid = pay()
     if paid then
         paidCount = paidCount + 1
@@ -6255,9 +6315,7 @@ local function waitForRestock()
                             local min, sec = el.Text:match("(%d+):(%d+)")
                             if min and sec then
                                 local remaining = tonumber(min)*60 + tonumber(sec)
-                                if remaining >= 590 then
-                                    return
-                                end
+                                if remaining >= 590 then return end
                             end
                         end
                     end
@@ -6272,7 +6330,9 @@ end
 -- ========== Main Loop ==========
 local function mainLoop()
     task.spawn(cartSyncUpdater)
+    
     while running do
+        -- Сброс
         for _, item in ipairs(clothes) do
             item.taken = false
             item.unavailable = false
@@ -6281,49 +6341,28 @@ local function mainLoop()
         shopLimits = {}
         takenCount = 0
         lastMoveTime = tick()
+        
         findClothes()
         updateList()
         log("New cycle.")
-
+        
         local paid = false
-        for shopIdx, shop in ipairs(route) do
-            if not running or paid then break end
-            syncCartCount()
-            if takenCount >= SETTINGS.MAX_TOTAL then
-                goToPay()
-                paid = true
-                break
-            end
-
-            log("=== Entering " .. shop.name .. " ===")
-            walkTo(shop.position)
-            task.wait(1)
-
-            local shopItems = {}
-            for _, item in ipairs(clothes) do
-                if item.shop == shop.name and not item.taken and not item.unavailable and shouldBuyItem(item) then
-                    table.insert(shopItems, item)
-                end
-            end
-
-            local curPos = rootPart.Position
-            table.sort(shopItems, function(a, b)
-                local dA = a.position and (a.position - curPos).Magnitude or 9999
-                local dB = b.position and (b.position - curPos).Magnitude or 9999
-                return dA < dB
-            end)
-
-            for _, item in ipairs(shopItems) do
+        
+        -- Если ESP автопокупка включена - покупаем только подсвеченные
+        if SETTINGS.ESP_AUTO_BUY and SETTINGS.ESP_ENABLED then
+            log("ESP Auto-Buy mode: buying " .. #espItems .. " highlighted items")
+            
+            for _, item in ipairs(espItems) do
                 if not running then break end
                 syncCartCount()
                 if takenCount >= SETTINGS.MAX_TOTAL then break end
                 if item.taken or item.unavailable then continue end
-
+                
                 if item.position then
                     walkTo(item.position)
                     task.wait(0.3)
                 end
-
+                
                 local success = tryTakeItem(item)
                 if success then
                     item.taken = true
@@ -6331,6 +6370,7 @@ local function mainLoop()
                     syncCartCount()
                     updateStats()
                     updateList()
+                    
                     local waitStart = tick()
                     while tick() - waitStart < SETTINGS.SUCCESS_DELAY do
                         if not running then break end
@@ -6340,34 +6380,98 @@ local function mainLoop()
                 else
                     item.unavailable = true
                     updateList()
-                    local waitStart = tick()
-                    while tick() - waitStart < SETTINGS.FAIL_DELAY do
-                        if not running then break end
-                        doQuickMove()
-                        task.wait(0.5)
-                    end
                 end
             end
-
+            
             if takenCount > 0 then
                 goToPay()
                 paid = true
-                break
             end
-
-            if shopIdx == #route then break end
+        else
+            -- Обычный режим - по маршруту
+            for shopIdx, shop in ipairs(route) do
+                if not running or paid then break end
+                syncCartCount()
+                if takenCount >= SETTINGS.MAX_TOTAL then
+                    goToPay()
+                    paid = true
+                    break
+                end
+                
+                log("=== Entering " .. shop.name .. " ===")
+                walkTo(shop.position)
+                task.wait(1)
+                
+                local shopItems = {}
+                for _, item in ipairs(clothes) do
+                    if item.shop == shop.name and not item.taken and not item.unavailable and shouldBuyItem(item) then
+                        table.insert(shopItems, item)
+                    end
+                end
+                
+                local curPos = rootPart.Position
+                table.sort(shopItems, function(a, b)
+                    local dA = a.position and (a.position - curPos).Magnitude or 9999
+                    local dB = b.position and (b.position - curPos).Magnitude or 9999
+                    return dA < dB
+                end)
+                
+                for _, item in ipairs(shopItems) do
+                    if not running then break end
+                    syncCartCount()
+                    if takenCount >= SETTINGS.MAX_TOTAL then break end
+                    if item.taken or item.unavailable then continue end
+                    
+                    if item.position then
+                        walkTo(item.position)
+                        task.wait(0.3)
+                    end
+                    
+                    local success = tryTakeItem(item)
+                    if success then
+                        item.taken = true
+                        totalMoneySpent = totalMoneySpent + (item.price or 0)
+                        syncCartCount()
+                        updateStats()
+                        updateList()
+                        
+                        local waitStart = tick()
+                        while tick() - waitStart < SETTINGS.SUCCESS_DELAY do
+                            if not running then break end
+                            doQuickMove()
+                            task.wait(0.5)
+                        end
+                    else
+                        item.unavailable = true
+                        updateList()
+                        
+                        local waitStart = tick()
+                        while tick() - waitStart < SETTINGS.FAIL_DELAY do
+                            if not running then break end
+                            doQuickMove()
+                            task.wait(0.5)
+                        end
+                    end
+                end
+                
+                if takenCount > 0 then
+                    goToPay()
+                    paid = true
+                    break
+                end
+                
+                if shopIdx == #route then break end
+            end
+            
+            if not paid and takenCount > 0 then
+                goToPay()
+            end
         end
-
-        if not paid and takenCount > 0 then
-            goToPay()
-        end
-
+        
         if running then
             findClothes()
             updateList()
-            if SETTINGS.ESP_ENABLED then
-                updateESP()
-            end
+            if SETTINGS.ESP_ENABLED then updateESP() end
             waitForRestock()
         end
     end
@@ -6388,12 +6492,14 @@ frame.BorderSizePixel = 0
 frame.Parent = screenGui
 Instance.new("UICorner", frame).CornerRadius = UDim.new(0,10)
 
+-- Title
 local titleBar = Instance.new("Frame")
 titleBar.Size = UDim2.new(1,0,0,55)
 titleBar.BackgroundColor3 = Color3.fromRGB(20,20,20)
 titleBar.BorderSizePixel = 0
 titleBar.Parent = frame
 Instance.new("UICorner", titleBar).CornerRadius = UDim.new(0,10)
+
 local titleLabel = Instance.new("TextLabel")
 titleLabel.Size = UDim2.new(1,-45,1,0)
 titleLabel.Position = UDim2.new(0,10,0,0)
@@ -6404,6 +6510,7 @@ titleLabel.Font = Enum.Font.GothamBold
 titleLabel.TextSize = 14
 titleLabel.TextXAlignment = Enum.TextXAlignment.Left
 titleLabel.Parent = titleBar
+
 local closeBtn = Instance.new("TextButton")
 closeBtn.Size = UDim2.new(0,40,0,40)
 closeBtn.Position = UDim2.new(1,-45,0,7)
@@ -6416,6 +6523,7 @@ closeBtn.Parent = titleBar
 Instance.new("UICorner", closeBtn).CornerRadius = UDim.new(0,8)
 closeBtn.MouseButton1Click:Connect(function() running = false screenGui:Destroy(); toggleESP(false) end)
 
+-- Dragging
 local dragging, dragInput, dragStart, startPos = false, nil, nil, nil
 local function updateDrag(input)
     if dragging then
@@ -6423,15 +6531,18 @@ local function updateDrag(input)
         frame.Position = UDim2.new(startPos.X.Scale, startPos.X.Offset + delta.X, startPos.Y.Scale, startPos.Y.Offset + delta.Y)
     end
 end
+
 titleBar.InputBegan:Connect(function(input)
     if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
         dragging = true; dragStart = input.Position; startPos = frame.Position
         input.Changed:Connect(function() if input.UserInputState == Enum.UserInputState.End then dragging = false end end)
     end
 end)
+
 titleBar.InputChanged:Connect(function(input)
     if input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch then dragInput = input end
 end)
+
 UIS.InputChanged:Connect(function(input) if input == dragInput then updateDrag(input) end end)
 
 local restockLabel = Instance.new("TextLabel")
@@ -6446,8 +6557,9 @@ restockLabel.TextXAlignment = Enum.TextXAlignment.Center
 restockLabel.Parent = frame
 Instance.new("UICorner", restockLabel).CornerRadius = UDim.new(0,8)
 
+-- Filters frame
 local filterFrame = Instance.new("Frame")
-filterFrame.Size = UDim2.new(1,-20,0,150)
+filterFrame.Size = UDim2.new(1,-20,0,180)
 filterFrame.Position = UDim2.new(0,10,0,90)
 filterFrame.BackgroundColor3 = Color3.fromRGB(20,20,20)
 filterFrame.Parent = frame
@@ -6464,6 +6576,7 @@ filterTitle.TextSize = 11
 filterTitle.TextXAlignment = Enum.TextXAlignment.Left
 filterTitle.Parent = filterFrame
 
+-- Min/Max
 local priceMinLabel = Instance.new("TextLabel")
 priceMinLabel.Size = UDim2.new(0.15,0,0,25)
 priceMinLabel.Position = UDim2.new(0,5,0,25)
@@ -6485,7 +6598,14 @@ priceMinInput.Font = Enum.Font.Gotham
 priceMinInput.TextSize = 11
 priceMinInput.Parent = filterFrame
 Instance.new("UICorner", priceMinInput).CornerRadius = UDim.new(0,4)
-priceMinInput.FocusLost:Connect(function() local val = tonumber(priceMinInput.Text) if val then SETTINGS.MIN_PRICE = val updateList(); updateESP() end end)
+priceMinInput.FocusLost:Connect(function() 
+    local val = tonumber(priceMinInput.Text) 
+    if val then 
+        SETTINGS.MIN_PRICE = val 
+        updateList()
+        updateESP() 
+    end 
+end)
 
 local priceMaxLabel = Instance.new("TextLabel")
 priceMaxLabel.Size = UDim2.new(0.15,0,0,25)
@@ -6508,8 +6628,16 @@ priceMaxInput.Font = Enum.Font.Gotham
 priceMaxInput.TextSize = 11
 priceMaxInput.Parent = filterFrame
 Instance.new("UICorner", priceMaxInput).CornerRadius = UDim.new(0,4)
-priceMaxInput.FocusLost:Connect(function() local val = tonumber(priceMaxInput.Text) if val then SETTINGS.MAX_PRICE = val updateList(); updateESP() end end)
+priceMaxInput.FocusLost:Connect(function() 
+    local val = tonumber(priceMaxInput.Text) 
+    if val then 
+        SETTINGS.MAX_PRICE = val 
+        updateList()
+        updateESP() 
+    end 
+end)
 
+-- Name/Shop
 local nameLabel = Instance.new("TextLabel")
 nameLabel.Size = UDim2.new(0.2,0,0,25)
 nameLabel.Position = UDim2.new(0,5,0,55)
@@ -6532,7 +6660,11 @@ nameInput.Font = Enum.Font.Gotham
 nameInput.TextSize = 11
 nameInput.Parent = filterFrame
 Instance.new("UICorner", nameInput).CornerRadius = UDim.new(0,4)
-nameInput.FocusLost:Connect(function() SETTINGS.NAME_FILTER = nameInput.Text updateList(); updateESP() end)
+nameInput.FocusLost:Connect(function() 
+    SETTINGS.NAME_FILTER = nameInput.Text 
+    updateList()
+    updateESP() 
+end)
 
 local shopLabel = Instance.new("TextLabel")
 shopLabel.Size = UDim2.new(0.2,0,0,25)
@@ -6556,9 +6688,13 @@ shopInput.Font = Enum.Font.Gotham
 shopInput.TextSize = 11
 shopInput.Parent = filterFrame
 Instance.new("UICorner", shopInput).CornerRadius = UDim.new(0,4)
-shopInput.FocusLost:Connect(function() SETTINGS.SHOP_FILTER = shopInput.Text updateList(); updateESP() end)
+shopInput.FocusLost:Connect(function() 
+    SETTINGS.SHOP_FILTER = shopInput.Text 
+    updateList()
+    updateESP() 
+end)
 
--- ========== УЛУЧШЕННЫЕ КНОПКИ РЕДКОСТИ ==========
+-- Rarity buttons (ИСПРАВЛЕННЫЕ - с визуальной индикацией)
 local rarityLabel = Instance.new("TextLabel")
 rarityLabel.Size = UDim2.new(0.15,0,0,20)
 rarityLabel.Position = UDim2.new(0,5,0,85)
@@ -6580,15 +6716,18 @@ local rarityList = {"all", "common", "uncommon", "rare", "epic", "legendary"}
 local rarityButtons = {}
 local activeRarityBtn = nil
 
+-- Функция обновления кнопок редкости
 local function updateRarityButtons(selected)
     for i, btn in ipairs(rarityButtons) do
         local isActive = (btn == selected)
         if isActive then
+            -- Выбранная кнопка - БЕЛАЯ
             btn.BackgroundColor3 = Color3.fromRGB(255,255,255)
             btn.TextColor3 = Color3.new(0,0,0)
             btn.BorderSizePixel = 2
             btn.BorderColor3 = Color3.fromRGB(255,200,50)
         else
+            -- Не выбранная - цвет редкости
             btn.BackgroundColor3 = (rarityList[i] == "all") and Color3.fromRGB(80,80,80) or RARITY_COLORS[rarityList[i]]
             btn.TextColor3 = Color3.new(1,1,1)
             btn.BorderSizePixel = 0
@@ -6607,11 +6746,10 @@ for i, r in ipairs(rarityList) do
     btn.Font = Enum.Font.GothamBold
     btn.TextSize = 10
     btn.BorderSizePixel = 0
-    btn.AutoButtonColor = false
+    btn.AutoButtonColor = false  -- ВАЖНО: отключаем автоцвет
     btn.Parent = rarityBtnFrame
     Instance.new("UICorner", btn).CornerRadius = UDim.new(0,4)
     
-    -- ✅ УЛУЧШЕННЫЙ ОБРАБОТЧИК КЛИКА
     btn.MouseButton1Click:Connect(function()
         SETTINGS.RARITY_FILTER = r
         activeRarityBtn = btn
@@ -6623,9 +6761,11 @@ for i, r in ipairs(rarityList) do
     
     table.insert(rarityButtons, btn)
 end
+
 activeRarityBtn = rarityButtons[1]
 updateRarityButtons(activeRarityBtn)
 
+-- ESP button
 local espToggle = Instance.new("TextButton")
 espToggle.Size = UDim2.new(0.5, -10, 0, 32)
 espToggle.Position = UDim2.new(0, 5, 0, 120)
@@ -6636,6 +6776,7 @@ espToggle.Font = Enum.Font.GothamBold
 espToggle.TextSize = 12
 espToggle.Parent = filterFrame
 Instance.new("UICorner", espToggle).CornerRadius = UDim.new(0,6)
+
 espToggle.MouseButton1Click:Connect(function()
     local newVal = not SETTINGS.ESP_ENABLED
     SETTINGS.ESP_ENABLED = newVal
@@ -6643,25 +6784,39 @@ espToggle.MouseButton1Click:Connect(function()
     if newVal then
         initESP()
     else
-        if espConn then 
-            espConn:Disconnect()
-            espConn = nil 
-        end
-        if espGui then 
-            espGui:Destroy()
-            espGui = nil 
-        end
-        espPool = {}
-        espLive = {}
+        if espConn then espConn:Disconnect(); espConn = nil end
+        if espGui then espGui:Destroy(); espGui = nil end
+        espPool = nil; espLive = nil
+        espItems = {}
     end
     
     espToggle.Text = newVal and "ESP: ON" or "ESP: OFF"
     espToggle.BackgroundColor3 = newVal and Color3.fromRGB(80,200,80) or Color3.fromRGB(40,40,40)
 end)
 
+-- ESP Auto-Buy toggle
+local espAutoBuyToggle = Instance.new("TextButton")
+espAutoBuyToggle.Size = UDim2.new(0.5, -10, 0, 32)
+espAutoBuyToggle.Position = UDim2.new(0.5, 5, 0, 120)
+espAutoBuyToggle.BackgroundColor3 = Color3.fromRGB(40,40,40)
+espAutoBuyToggle.Text = "ESP AutoBuy: OFF"
+espAutoBuyToggle.TextColor3 = Color3.new(1,1,1)
+espAutoBuyToggle.Font = Enum.Font.GothamBold
+espAutoBuyToggle.TextSize = 11
+espAutoBuyToggle.Parent = filterFrame
+Instance.new("UICorner", espAutoBuyToggle).CornerRadius = UDim.new(0,6)
+
+espAutoBuyToggle.MouseButton1Click:Connect(function()
+    SETTINGS.ESP_AUTO_BUY = not SETTINGS.ESP_AUTO_BUY
+    espAutoBuyToggle.Text = SETTINGS.ESP_AUTO_BUY and "ESP AutoBuy: ON" or "ESP AutoBuy: OFF"
+    espAutoBuyToggle.BackgroundColor3 = SETTINGS.ESP_AUTO_BUY and Color3.fromRGB(80,200,80) or Color3.fromRGB(40,40,40)
+    log("ESP AutoBuy: " .. tostring(SETTINGS.ESP_AUTO_BUY))
+end)
+
+-- Stats
 local filterStats = Instance.new("TextLabel")
 filterStats.Size = UDim2.new(1,-10,0,20)
-filterStats.Position = UDim2.new(0,10,0,245)
+filterStats.Position = UDim2.new(0,10,0,165)
 filterStats.BackgroundTransparency = 1
 filterStats.Text = "Total: 0 | Filtered: 0"
 filterStats.TextColor3 = Color3.fromRGB(200,200,200)
@@ -6672,7 +6827,7 @@ filterStats.Parent = frame
 
 local statsFrame = Instance.new("Frame")
 statsFrame.Size = UDim2.new(1,-20,0,80)
-statsFrame.Position = UDim2.new(0,10,0,270)
+statsFrame.Position = UDim2.new(0,10,0,190)
 statsFrame.BackgroundColor3 = Color3.fromRGB(25,25,25)
 statsFrame.Parent = frame
 Instance.new("UICorner", statsFrame).CornerRadius = UDim.new(0,8)
@@ -6734,7 +6889,7 @@ moneyLabel.Parent = statsFrame
 
 local startBtn = Instance.new("TextButton")
 startBtn.Size = UDim2.new(1,-20,0,55)
-startBtn.Position = UDim2.new(0,10,0,360)
+startBtn.Position = UDim2.new(0,10,0,280)
 startBtn.BackgroundColor3 = Color3.fromRGB(80,200,80)
 startBtn.Text = "START"
 startBtn.TextColor3 = Color3.new(0,0,0)
@@ -6745,7 +6900,7 @@ Instance.new("UICorner", startBtn).CornerRadius = UDim.new(0,10)
 
 local statusLabel = Instance.new("TextLabel")
 statusLabel.Size = UDim2.new(1,-20,0,30)
-statusLabel.Position = UDim2.new(0,10,0,420)
+statusLabel.Position = UDim2.new(0,10,0,340)
 statusLabel.BackgroundTransparency = 1
 statusLabel.Text = "Ready"
 statusLabel.TextColor3 = Color3.fromRGB(100,255,100)
@@ -6756,9 +6911,9 @@ statusLabel.Parent = frame
 
 local logLabel = Instance.new("TextLabel")
 logLabel.Size = UDim2.new(1,-20,0,100)
-logLabel.Position = UDim2.new(0,10,0,455)
+logLabel.Position = UDim2.new(0,10,0,375)
 logLabel.BackgroundTransparency = 1
-logLabel.Text = "Log:"
+logLabel.Text = " Log:"
 logLabel.TextColor3 = Color3.fromRGB(180,180,180)
 logLabel.Font = Enum.Font.Code
 logLabel.TextSize = 11
@@ -6774,8 +6929,8 @@ local function addLog(msg)
 end
 
 local scrollFrame = Instance.new("ScrollingFrame")
-scrollFrame.Size = UDim2.new(1,-20,1,-560)
-scrollFrame.Position = UDim2.new(0,10,0,560)
+scrollFrame.Size = UDim2.new(1,-20,1,-490)
+scrollFrame.Position = UDim2.new(0,10,0,480)
 scrollFrame.BackgroundColor3 = Color3.fromRGB(20,20,20)
 scrollFrame.BorderSizePixel = 0
 scrollFrame.ScrollBarThickness = 6
@@ -6810,6 +6965,7 @@ local function updateList()
     end
     local filtered = getFilteredItems()
     filterStats.Text = "Total: " .. #clothes .. " | Filtered: " .. #filtered
+    
     for i, item in ipairs(filtered) do
         local itemFrame = Instance.new("Frame")
         itemFrame.Size = UDim2.new(1,-10,0,65)
@@ -6817,12 +6973,12 @@ local function updateList()
         itemFrame.LayoutOrder = i
         itemFrame.Parent = scrollFrame
         Instance.new("UICorner", itemFrame).CornerRadius = UDim.new(0,8)
-
+        
         local rarityBar = Instance.new("Frame")
         rarityBar.Size = UDim2.new(0,4,1,0)
         rarityBar.BackgroundColor3 = RARITY_COLORS[item.rarity] or Color3.fromRGB(150,150,150)
         rarityBar.Parent = itemFrame
-
+        
         local nameLabel = Instance.new("TextLabel")
         nameLabel.Size = UDim2.new(1,-15,0,20)
         nameLabel.Position = UDim2.new(0,10,0,3)
@@ -6833,7 +6989,7 @@ local function updateList()
         nameLabel.TextSize = 12
         nameLabel.TextXAlignment = Enum.TextXAlignment.Left
         nameLabel.Parent = itemFrame
-
+        
         local infoLabel = Instance.new("TextLabel")
         infoLabel.Size = UDim2.new(1,-15,0,18)
         infoLabel.Position = UDim2.new(0,10,0,23)
@@ -6844,7 +7000,7 @@ local function updateList()
         infoLabel.TextSize = 10
         infoLabel.TextXAlignment = Enum.TextXAlignment.Left
         infoLabel.Parent = itemFrame
-
+        
         local rarityLabel = Instance.new("TextLabel")
         rarityLabel.Size = UDim2.new(1,-15,0,18)
         rarityLabel.Position = UDim2.new(0,10,0,41)
@@ -6856,6 +7012,7 @@ local function updateList()
         rarityLabel.TextXAlignment = Enum.TextXAlignment.Left
         rarityLabel.Parent = itemFrame
     end
+    
     scrollFrame.CanvasSize = UDim2.new(0,0,0, listLayout.AbsoluteContentSize.Y + 10)
 end
 
@@ -6875,18 +7032,20 @@ startBtn.MouseButton1Click:Connect(function()
         findClothes()
         updateStats()
         updateList()
+        
         if SETTINGS.ESP_ENABLED then
-            toggleESP(true)
+            initESP()
             espToggle.Text = "ESP: ON"
             espToggle.BackgroundColor3 = Color3.fromRGB(80,200,80)
-            updateESP()
         end
+        
         task.spawn(function()
             while running do
                 restockLabel.Text = updateRestockDisplay()
                 task.wait(1)
             end
         end)
+        
         task.spawn(mainLoop)
     end
 end)
