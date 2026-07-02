@@ -5586,6 +5586,7 @@ if u1 and u1.SHOP_ITEMS then
     for _ in pairs(u1.SHOP_ITEMS) do brandCount = brandCount + 1 end
 end
 print("Количество брендов: " .. brandCount)
+if brandCount == 0 then error("u1.SHOP_ITEMS пуста! Проверь вставку.") end
 
 local Workspace = game:GetService("Workspace")
 local Players = game:GetService("Players")
@@ -5599,17 +5600,21 @@ local humanoid = character:WaitForChild("Humanoid")
 local rootPart = character:WaitForChild("HumanoidRootPart")
 
 print("\n" .. string.rep("=", 80))
-print("AUTOBUY v24 – с кнопками редкости")
+print("AUTOBUY v24 – фильтры + оплата после магазина")
 print(string.rep("=", 80) .. "\n")
 
 -- ========== ПОСТРОЕНИЕ КАРТЫ ДАННЫХ ==========
 local itemDataById = {}
+local itemDataByTemplate = {}
 local itemDataByName = {}
+local itemDataByBrand = {}
+
 local function buildItemMap()
     for brand, categories in pairs(u1.SHOP_ITEMS) do
         for category, items in pairs(categories) do
             for _, item in ipairs(items) do
                 local id = tostring(item.id)
+                local template = item.templateId and tostring(item.templateId) or nil
                 local data = {
                     name = item.name,
                     price = item.fairPrice,
@@ -5619,14 +5624,19 @@ local function buildItemMap()
                     spawnChance = item.spawnChance,
                     economyProfile = item.economyProfile
                 }
-                itemDataById[id] = data
-                if not itemDataByName[item.name] then
-                    itemDataByName[item.name] = data
+                if id and id ~= "" then
+                    itemDataById[id] = data
+                    if not itemDataByBrand[brand] then itemDataByBrand[brand] = {} end
+                    table.insert(itemDataByBrand[brand], data)
                 end
+                if template then itemDataByTemplate[template] = data end
+                if not itemDataByName[item.name] then itemDataByName[item.name] = data end
             end
         end
     end
-    print("[Data] Загружено предметов по ID: " .. #itemDataById)
+    local idCount = 0
+    for _ in pairs(itemDataById) do idCount = idCount + 1 end
+    print("[Data] Загружено по ID: " .. idCount)
 end
 buildItemMap()
 
@@ -5634,7 +5644,7 @@ buildItemMap()
 local SETTINGS = {
     MAX_PER_SHOP = 15,
     MAX_TOTAL = 15,
-    SUCCESS_DELAY = 4,
+    SUCCESS_DELAY = 2,
     FAIL_DELAY = 1,
     MOVE_INTERVAL = 2,
     WALK_SPEED = 18,
@@ -5697,28 +5707,39 @@ local function findPosition(obj)
     return nil
 end
 
+-- ===== ИЗВЛЕЧЕНИЕ ID ИЗ МОДЕЛИ (Att_700274 -> 700274) =====
 local function getItemIdFromModel(model)
     if not model then return nil end
     local attrs = model:GetAttributes()
     if attrs.id then return tostring(attrs.id) end
     if attrs.assetId then return tostring(attrs.assetId) end
+    if attrs.templateId then return tostring(attrs.templateId) end
     for _, child in ipairs(model:GetChildren()) do
         if child:IsA("BasePart") and child.Name:match("^%d+$") then
             return child.Name
         end
     end
-    local num = model.Name:match("%d+")
+    local name = model.Name
+    local num = name:match("Att_(%d+)")
+    if num then return num end
+    num = name:match("^(%d+)$")
     if num then return num end
     return nil
 end
 
 local function getItemDataFromMap(model, itemName)
     local id = getItemIdFromModel(model)
-    if id and itemDataById[id] then return itemDataById[id] end
-    if itemDataByName[itemName] then return itemDataByName[itemName] end
-    for name, data in pairs(itemDataByName) do
+    if id then
+        local data = itemDataById[id]
+        if data then return data end
+        data = itemDataByTemplate[id]
+        if data then return data end
+    end
+    local data = itemDataByName[itemName]
+    if data then return data end
+    for name, d in pairs(itemDataByName) do
         if itemName:lower():find(name:lower()) or name:lower():find(itemName:lower()) then
-            return data
+            return d
         end
     end
     return nil
@@ -5939,7 +5960,13 @@ local function shouldBuyItem(item)
     if not item.price then return false end
     if item.price < SETTINGS.MIN_PRICE or item.price > SETTINGS.MAX_PRICE then return false end
     if SETTINGS.NAME_FILTER ~= "" and not item.name:lower():find(SETTINGS.NAME_FILTER:lower()) then return false end
-    if SETTINGS.SHOP_FILTER ~= "" and not item.shop:lower():find(SETTINGS.SHOP_FILTER:lower()) then return false end
+    if SETTINGS.SHOP_FILTER ~= "" then
+        local filter = SETTINGS.SHOP_FILTER:lower()
+        local match = false
+        if item.shop:lower():find(filter) then match = true end
+        if not match and item.brand and item.brand:lower():find(filter) then match = true end
+        if not match then return false end
+    end
     if SETTINGS.RARITY_FILTER ~= "all" and item.rarity ~= SETTINGS.RARITY_FILTER then return false end
     return true
 end
@@ -5981,6 +6008,7 @@ local function findClothes()
                 local price = data and data.price or nil
                 local rarity = data and data.rarity or nil
                 local displayName = data and data.name or rawName
+                local brand = data and data.brand or nil
 
                 if not price then
                     local slotPart = parent
@@ -5996,15 +6024,16 @@ local function findClothes()
 
                 table.insert(clothes, {
                     obj = obj, parent = parent, name = displayName,
-                    position = position, shop = shopName, floor = floor,
+                    position = position, shop = shopName, brand = brand, floor = floor,
                     taken = false, unavailable = false, failedAttempts = 0,
-                    rarity = rarity, price = price, slotRef = parent,
-                    rawName = rawName
+                    rarity = rarity, price = price, slotRef = parent, rawName = rawName
                 })
             end
         end
     end
-    log("Найдено " .. #clothes .. " предметов")
+    local withPrice = 0
+    for _, it in ipairs(clothes) do if it.price then withPrice = withPrice + 1 end end
+    log("Найдено " .. #clothes .. " предметов, с ценой: " .. withPrice)
 end
 
 local function getBuyableItems()
@@ -6159,7 +6188,7 @@ local function waitForRestock()
     end
 end
 
--- ========== ГЛАВНЫЙ ЦИКЛ ==========
+-- ========== ГЛАВНЫЙ ЦИКЛ (ОПЛАТА ПОСЛЕ МАГАЗИНА) ==========
 local function mainLoop()
     task.spawn(cartSyncUpdater)
     while running do
@@ -6171,14 +6200,12 @@ local function mainLoop()
         shopLimits = {}
         takenCount = 0
         lastMoveTime = tick()
-        
         findClothes()
-        local buyable = getBuyableItems()
         updateList()
-        log("Новый цикл. Доступно для покупки: " .. #buyable)
-        
+        log("Новый цикл.")
+
         local paid = false
-        for _, item in ipairs(buyable) do
+        for shopIdx, shop in ipairs(route) do
             if not running or paid then break end
             syncCartCount()
             if takenCount >= SETTINGS.MAX_TOTAL then
@@ -6186,48 +6213,83 @@ local function mainLoop()
                 paid = true
                 break
             end
-            
-            if item.taken or item.unavailable then continue end
-            
-            if item.position then
-                walkTo(item.position)
-                task.wait(0.3)
+
+            log("=== Заходим в " .. shop.name .. " ===")
+            walkTo(shop.position)
+            task.wait(1)
+
+            -- Собираем все подходящие предметы в этом магазине
+            local shopItems = {}
+            for _, item in ipairs(clothes) do
+                if item.shop == shop.name and not item.taken and not item.unavailable and shouldBuyItem(item) then
+                    table.insert(shopItems, item)
+                end
             end
-            
-            local success = tryTakeItem(item)
-            if success then
-                item.taken = true
-                totalMoneySpent = totalMoneySpent + (item.price or 0)
+
+            -- Сортируем по расстоянию
+            local curPos = rootPart.Position
+            table.sort(shopItems, function(a, b)
+                local dA = a.position and (a.position - curPos).Magnitude or 9999
+                local dB = b.position and (b.position - curPos).Magnitude or 9999
+                return dA < dB
+            end)
+
+            for _, item in ipairs(shopItems) do
+                if not running then break end
                 syncCartCount()
-                updateStats()
-                updateList()
                 if takenCount >= SETTINGS.MAX_TOTAL then
-                    goToPay()
-                    paid = true
                     break
                 end
-                local waitStart = tick()
-                while tick() - waitStart < SETTINGS.SUCCESS_DELAY do
-                    if not running then break end
-                    doQuickMove()
-                    task.wait(0.5)
+                if item.taken or item.unavailable then continue end
+
+                if item.position then
+                    walkTo(item.position)
+                    task.wait(0.3)
                 end
-            else
-                item.unavailable = true
-                updateList()
-                local waitStart = tick()
-                while tick() - waitStart < SETTINGS.FAIL_DELAY do
-                    if not running then break end
-                    doQuickMove()
-                    task.wait(0.5)
+
+                local success = tryTakeItem(item)
+                if success then
+                    item.taken = true
+                    totalMoneySpent = totalMoneySpent + (item.price or 0)
+                    syncCartCount()
+                    updateStats()
+                    updateList()
+                    local waitStart = tick()
+                    while tick() - waitStart < SETTINGS.SUCCESS_DELAY do
+                        if not running then break end
+                        doQuickMove()
+                        task.wait(0.5)
+                    end
+                else
+                    item.unavailable = true
+                    updateList()
+                    local waitStart = tick()
+                    while tick() - waitStart < SETTINGS.FAIL_DELAY do
+                        if not running then break end
+                        doQuickMove()
+                        task.wait(0.5)
+                    end
                 end
             end
+
+            -- После сбора всех предметов в магазине – оплачиваем, если есть что
+            if takenCount > 0 then
+                goToPay()
+                paid = true
+                break -- выходим из цикла магазинов, начнём новый цикл
+            end
+
+            -- Если магазин пуст – идём дальше
+            if shopIdx == #route then
+                -- Если дошли до конца и ничего не взяли – ждём ресток
+                break
+            end
         end
-        
+
         if not paid and takenCount > 0 then
             goToPay()
         end
-        
+
         if running then
             findClothes()
             updateList()
@@ -6236,7 +6298,7 @@ local function mainLoop()
     end
 end
 
--- ========== GUI (с кнопками редкости) ==========
+-- ========== GUI (кнопки редкости увеличены) ==========
 local screenGui = Instance.new("ScreenGui")
 screenGui.Name = "AutoBuy_v24"
 screenGui.ResetOnSpawn = false
@@ -6262,7 +6324,7 @@ local titleLabel = Instance.new("TextLabel")
 titleLabel.Size = UDim2.new(1,-45,1,0)
 titleLabel.Position = UDim2.new(0,10,0,0)
 titleLabel.BackgroundTransparency = 1
-titleLabel.Text = " AutoBuy v24 | Кнопки редкости"
+titleLabel.Text = " AutoBuy v24 | Фильтры + оплата после магазина"
 titleLabel.TextColor3 = Color3.new(1,1,1)
 titleLabel.Font = Enum.Font.GothamBold
 titleLabel.TextSize = 14
@@ -6429,7 +6491,7 @@ shopInput.Parent = filterFrame
 Instance.new("UICorner", shopInput).CornerRadius = UDim.new(0,4)
 shopInput.FocusLost:Connect(function() SETTINGS.SHOP_FILTER = shopInput.Text updateList() end)
 
--- ===== КНОПКИ РЕДКОСТИ =====
+-- ===== КНОПКИ РЕДКОСТИ (увеличены) =====
 local rarityLabel = Instance.new("TextLabel")
 rarityLabel.Size = UDim2.new(0.15,0,0,20)
 rarityLabel.Position = UDim2.new(0,5,0,85)
@@ -6442,8 +6504,8 @@ rarityLabel.TextXAlignment = Enum.TextXAlignment.Left
 rarityLabel.Parent = filterFrame
 
 local rarityBtnFrame = Instance.new("Frame")
-rarityBtnFrame.Size = UDim2.new(0.8, -10, 0, 28)
-rarityBtnFrame.Position = UDim2.new(0.15, 5, 0, 82)
+rarityBtnFrame.Size = UDim2.new(0.8, -10, 0, 32)
+rarityBtnFrame.Position = UDim2.new(0.15, 5, 0, 80)
 rarityBtnFrame.BackgroundTransparency = 1
 rarityBtnFrame.Parent = filterFrame
 
@@ -6454,10 +6516,16 @@ local activeRarityBtn = nil
 local function updateRarityButtons(selected)
     for i, btn in ipairs(rarityButtons) do
         local isActive = (btn == selected)
-        btn.BackgroundColor3 = isActive and Color3.fromRGB(255,255,255) or (rarityList[i] == "all" and Color3.fromRGB(80,80,80) or RARITY_COLORS[rarityList[i]])
-        btn.TextColor3 = isActive and Color3.new(0,0,0) or Color3.new(1,1,1)
-        btn.BorderSizePixel = isActive and 2 or 0
-        btn.BorderColor3 = Color3.fromRGB(255,200,50)
+        if isActive then
+            btn.BackgroundColor3 = Color3.fromRGB(255,255,255)
+            btn.TextColor3 = Color3.new(0,0,0)
+            btn.BorderSizePixel = 2
+            btn.BorderColor3 = Color3.fromRGB(255,200,50)
+        else
+            btn.BackgroundColor3 = (rarityList[i] == "all") and Color3.fromRGB(80,80,80) or RARITY_COLORS[rarityList[i]]
+            btn.TextColor3 = Color3.new(1,1,1)
+            btn.BorderSizePixel = 0
+        end
     end
 end
 
@@ -6470,11 +6538,11 @@ for i, r in ipairs(rarityList) do
     btn.Text = displayName
     btn.TextColor3 = Color3.new(1,1,1)
     btn.Font = Enum.Font.GothamBold
-    btn.TextSize = 10
+    btn.TextSize = 11
     btn.BorderSizePixel = 0
+    btn.AutoButtonColor = true
     btn.Parent = rarityBtnFrame
     Instance.new("UICorner", btn).CornerRadius = UDim.new(0,4)
-    
     btn.MouseButton1Click:Connect(function()
         SETTINGS.RARITY_FILTER = r
         activeRarityBtn = btn
@@ -6486,8 +6554,8 @@ end
 
 activeRarityBtn = rarityButtons[1]
 updateRarityButtons(activeRarityBtn)
--- ===== КОНЕЦ КНОПОК =====
 
+-- ===== ОСТАЛЬНОЙ GUI =====
 local filterStats = Instance.new("TextLabel")
 filterStats.Size = UDim2.new(1,-10,0,20)
 filterStats.Position = UDim2.new(0,10,0,215)
@@ -6667,7 +6735,7 @@ local function updateList()
         infoLabel.Size = UDim2.new(1,-15,0,18)
         infoLabel.Position = UDim2.new(0,10,0,23)
         infoLabel.BackgroundTransparency = 1
-        infoLabel.Text = item.shop .. " | " .. item.floor .. " | $" .. (item.price or "?")
+        infoLabel.Text = (item.brand or item.shop) .. " | " .. item.floor .. " | $" .. (item.price or "?")
         infoLabel.TextColor3 = Color3.fromRGB(180,180,180)
         infoLabel.Font = Enum.Font.Gotham
         infoLabel.TextSize = 10
@@ -6715,4 +6783,4 @@ findClothes()
 updateStats()
 updateList()
 restockLabel.Text = updateRestockDisplay()
-print("AutoBuy v24 загружен – кнопки редкости добавлены!")
+print("AutoBuy v24 загружен – фильтры работают, оплата после сбора в магазине.")
