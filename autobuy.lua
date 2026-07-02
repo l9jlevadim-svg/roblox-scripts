@@ -6077,7 +6077,6 @@ local function initESP()
             active[w.holder] = true
             local pos = Vector2.new(screenPos.X, screenPos.Y)
             local size = math.clamp(3200 / math.max(screenPos.Z, 1), 24, 140)
-            -- tracer
             local dx = pos.X - tracerFrom.X
             local dy = pos.Y - tracerFrom.Y
             local dist = math.sqrt(dx*dx + dy*dy)
@@ -6126,21 +6125,15 @@ end
 
 local function updateESP()
     if not SETTINGS.ESP_ENABLED then return end
-    
-    -- Очищаем текущие ESP элементы
     if espLive then
-        for holder in pairs(espLive) do
-            holder.Visible = false
+        for holder, w in pairs(espLive) do
+            if w then
+                w.holder.Visible = false
+                table.insert(espPool, w)
+            end
         end
+        espLive = {}
     end
-    
-    -- Пересоздаём ESP с новыми фильтрами
-    if espConn then
-        espConn:Disconnect()
-        espConn = nil
-    end
-    
-    initESP()
 end
 
 -- ========== Interaction ==========
@@ -6370,16 +6363,16 @@ local function mainLoop()
         end
 
         if running then
-    findClothes()
-    updateList()
-    if SETTINGS.ESP_ENABLED then
-        updateESP()
-    end
+            findClothes()
+            updateList()
+            if SETTINGS.ESP_ENABLED then
+                updateESP()
+            end
+            waitForRestock()
         end
-    waitForRestock()
-end
     end
 end
+
 -- ========== GUI ==========
 local screenGui = Instance.new("ScreenGui")
 screenGui.Name = "AutoBuy_v24_ESP"
@@ -6395,7 +6388,6 @@ frame.BorderSizePixel = 0
 frame.Parent = screenGui
 Instance.new("UICorner", frame).CornerRadius = UDim.new(0,10)
 
--- Title
 local titleBar = Instance.new("Frame")
 titleBar.Size = UDim2.new(1,0,0,55)
 titleBar.BackgroundColor3 = Color3.fromRGB(20,20,20)
@@ -6424,7 +6416,6 @@ closeBtn.Parent = titleBar
 Instance.new("UICorner", closeBtn).CornerRadius = UDim.new(0,8)
 closeBtn.MouseButton1Click:Connect(function() running = false screenGui:Destroy(); toggleESP(false) end)
 
--- Dragging
 local dragging, dragInput, dragStart, startPos = false, nil, nil, nil
 local function updateDrag(input)
     if dragging then
@@ -6455,7 +6446,6 @@ restockLabel.TextXAlignment = Enum.TextXAlignment.Center
 restockLabel.Parent = frame
 Instance.new("UICorner", restockLabel).CornerRadius = UDim.new(0,8)
 
--- Filters frame
 local filterFrame = Instance.new("Frame")
 filterFrame.Size = UDim2.new(1,-20,0,150)
 filterFrame.Position = UDim2.new(0,10,0,90)
@@ -6474,7 +6464,6 @@ filterTitle.TextSize = 11
 filterTitle.TextXAlignment = Enum.TextXAlignment.Left
 filterTitle.Parent = filterFrame
 
--- Min/Max
 local priceMinLabel = Instance.new("TextLabel")
 priceMinLabel.Size = UDim2.new(0.15,0,0,25)
 priceMinLabel.Position = UDim2.new(0,5,0,25)
@@ -6521,7 +6510,6 @@ priceMaxInput.Parent = filterFrame
 Instance.new("UICorner", priceMaxInput).CornerRadius = UDim.new(0,4)
 priceMaxInput.FocusLost:Connect(function() local val = tonumber(priceMaxInput.Text) if val then SETTINGS.MAX_PRICE = val updateList(); updateESP() end end)
 
--- Name/Shop
 local nameLabel = Instance.new("TextLabel")
 nameLabel.Size = UDim2.new(0.2,0,0,25)
 nameLabel.Position = UDim2.new(0,5,0,55)
@@ -6570,7 +6558,7 @@ shopInput.Parent = filterFrame
 Instance.new("UICorner", shopInput).CornerRadius = UDim.new(0,4)
 shopInput.FocusLost:Connect(function() SETTINGS.SHOP_FILTER = shopInput.Text updateList(); updateESP() end)
 
--- Rarity buttons
+-- ========== УЛУЧШЕННЫЕ КНОПКИ РЕДКОСТИ ==========
 local rarityLabel = Instance.new("TextLabel")
 rarityLabel.Size = UDim2.new(0.15,0,0,20)
 rarityLabel.Position = UDim2.new(0,5,0,85)
@@ -6583,7 +6571,7 @@ rarityLabel.TextXAlignment = Enum.TextXAlignment.Left
 rarityLabel.Parent = filterFrame
 
 local rarityBtnFrame = Instance.new("Frame")
-rarityBtnFrame.Size = UDim2.new(0.8, -10, 0, 32)
+rarityBtnFrame.Size = UDim2.new(0.85, -10, 0, 32)
 rarityBtnFrame.Position = UDim2.new(0.15, 5, 0, 80)
 rarityBtnFrame.BackgroundTransparency = 1
 rarityBtnFrame.Parent = filterFrame
@@ -6617,24 +6605,27 @@ for i, r in ipairs(rarityList) do
     btn.Text = displayName
     btn.TextColor3 = Color3.new(1,1,1)
     btn.Font = Enum.Font.GothamBold
-    btn.TextSize = 11
+    btn.TextSize = 10
     btn.BorderSizePixel = 0
-    btn.AutoButtonColor = true
+    btn.AutoButtonColor = false
     btn.Parent = rarityBtnFrame
     Instance.new("UICorner", btn).CornerRadius = UDim.new(0,4)
+    
+    -- ✅ УЛУЧШЕННЫЙ ОБРАБОТЧИК КЛИКА
     btn.MouseButton1Click:Connect(function()
         SETTINGS.RARITY_FILTER = r
         activeRarityBtn = btn
         updateRarityButtons(btn)
         updateList()
         updateESP()
+        log("Rarity filter: " .. r)
     end)
+    
     table.insert(rarityButtons, btn)
 end
 activeRarityBtn = rarityButtons[1]
 updateRarityButtons(activeRarityBtn)
 
--- ESP button
 local espToggle = Instance.new("TextButton")
 espToggle.Size = UDim2.new(0.5, -10, 0, 32)
 espToggle.Position = UDim2.new(0, 5, 0, 120)
@@ -6668,7 +6659,6 @@ espToggle.MouseButton1Click:Connect(function()
     espToggle.BackgroundColor3 = newVal and Color3.fromRGB(80,200,80) or Color3.fromRGB(40,40,40)
 end)
 
--- Stats
 local filterStats = Instance.new("TextLabel")
 filterStats.Size = UDim2.new(1,-10,0,20)
 filterStats.Position = UDim2.new(0,10,0,245)
@@ -6778,10 +6768,11 @@ logLabel.Parent = frame
 
 local logText = {}
 local function addLog(msg)
-table.insert(logText, msg)
-if #logText > 7 then table.remove(logText, 1) end
-logLabel.Text = "Log:\n" .. table.concat(logText, "\n")
+    table.insert(logText, msg)
+    if #logText > 7 then table.remove(logText, 1) end
+    logLabel.Text = "Log:\n" .. table.concat(logText, "\n")
 end
+
 local scrollFrame = Instance.new("ScrollingFrame")
 scrollFrame.Size = UDim2.new(1,-20,1,-560)
 scrollFrame.Position = UDim2.new(0,10,0,560)
@@ -6888,6 +6879,7 @@ startBtn.MouseButton1Click:Connect(function()
             toggleESP(true)
             espToggle.Text = "ESP: ON"
             espToggle.BackgroundColor3 = Color3.fromRGB(80,200,80)
+            updateESP()
         end
         task.spawn(function()
             while running do
@@ -6895,9 +6887,7 @@ startBtn.MouseButton1Click:Connect(function()
                 task.wait(1)
             end
         end)
-       if SETTINGS.ESP_ENABLED then
-    updateESP()
-end
+        task.spawn(mainLoop)
     end
 end)
 
