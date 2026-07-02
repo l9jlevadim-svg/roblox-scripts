@@ -5598,9 +5598,9 @@ local character = player.Character or player.CharacterAdded:Wait()
 local humanoid = character:WaitForChild("Humanoid")
 local rootPart = character:WaitForChild("HumanoidRootPart")
 
-print("AUTOBUY v24 + ESP (filters + wallhack) loaded.")
+print("AUTOBUY v24 + ESP loaded.")
 
--- ========== Build item data map ==========
+-- ========== Data map ==========
 local itemDataById = {}
 local itemDataByTemplate = {}
 local itemDataByName = {}
@@ -6117,18 +6117,14 @@ local function toggleESP(on)
     SETTINGS.ESP_ENABLED = on
     if on then
         initESP()
-        print("[ESP] ON")
     else
         if espConn then espConn:Disconnect(); espConn = nil end
         if espGui then espGui:Destroy(); espGui = nil end
         espPool = nil; espLive = nil
-        print("[ESP] OFF")
     end
 end
 
-local function updateESP()
-    -- just force redraw on next frame
-end
+local function updateESP() end
 
 -- ========== Interaction ==========
 local function activatePrompt(prompt)
@@ -6441,7 +6437,7 @@ Instance.new("UICorner", restockLabel).CornerRadius = UDim.new(0,8)
 
 -- Filters frame
 local filterFrame = Instance.new("Frame")
-filterFrame.Size = UDim2.new(1,-20,0,150)  -- Increased height for ESP button
+filterFrame.Size = UDim2.new(1,-20,0,150)
 filterFrame.Position = UDim2.new(0,10,0,90)
 filterFrame.BackgroundColor3 = Color3.fromRGB(20,20,20)
 filterFrame.Parent = frame
@@ -6872,4 +6868,4 @@ findClothes()
 updateStats()
 updateList()
 restockLabel.Text = updateRestockDisplay()
-print("AutoBuy v24 + ESP loaded. Filters + wallhack ready.")
+print("AutoBuy v24 + ESP loaded. Filters and wallhack ready.")
