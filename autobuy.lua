@@ -6124,7 +6124,24 @@ local function toggleESP(on)
     end
 end
 
-local function updateESP() end
+local function updateESP()
+    if not SETTINGS.ESP_ENABLED then return end
+    
+    -- Очищаем текущие ESP элементы
+    if espLive then
+        for holder in pairs(espLive) do
+            holder.Visible = false
+        end
+    end
+    
+    -- Пересоздаём ESP с новыми фильтрами
+    if espConn then
+        espConn:Disconnect()
+        espConn = nil
+    end
+    
+    initESP()
+end
 
 -- ========== Interaction ==========
 local function activatePrompt(prompt)
