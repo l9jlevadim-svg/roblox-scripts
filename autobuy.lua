@@ -31,6 +31,7 @@ local function syncShopCatalogFromAutobuy()
 end
 syncShopCatalogFromAutobuy()
 print("[Catalog] TSUM loaded, items: " .. #SHOP_CATALOG.byId)
+
 -- ============================================================
 -- 3. ОСНОВНОЙ КОД (исправленный ESP + клики)
 -- ============================================================
