@@ -1,10 +1,10 @@
 -- ============================================================
--- 1. ТВОЙ u1 (если есть) или пустой
+-- 1. ТВОЙ u1 (можешь оставить пустым)
 -- ============================================================
 local u1 = {}
 
 -- ============================================================
--- 2. КАТАЛОГ TSUM (встроенный, не трогай)
+-- 2. КАТАЛОГ TSUM (встроенный)
 -- ============================================================
 local AUTOBUY_CATALOG_PARTS = {
     ["Common"] = [=[{["Common"] = { { n = "Белая футболка",i = 1352050969,s = 55.0,p = 120 },{ n = "Черная футболка",i = 6174845177,s = 55.0,p = 120 },{ n = "Синие джинсы",i = 9367316394,s = 50.0,p = 150 },{ n = "Черные джинсы",i = 8425198358,s = 50.0,p = 150 },{ n = "Серая футболка",i = 114724377,s = 45.0,p = 180 },{ n = "Nike Черная",i = 12820715433,s = 40.0,p = 900 },{ n = "Gutta Opiu White",i = 125787142138788,s = 38.0,p = 500 },{ n = "Nike Шорты",i = 6982632122,s = 38.0,p = 800 },{ n = "Amiri Футболка Черная2",i = 89306530816863,s = 20.0,p = 3200 },}}]=],
@@ -39,7 +39,6 @@ print("[OK] u1 loaded.")
 local brandCount = 0
 if u1 and u1.SHOP_ITEMS then for _ in pairs(u1.SHOP_ITEMS) do brandCount = brandCount + 1 end end
 print("Brands in u1: " .. brandCount)
-if brandCount == 0 then error("u1.SHOP_ITEMS is empty") end
 
 local Workspace = game:GetService("Workspace")
 local Players = game:GetService("Players")
@@ -439,7 +438,7 @@ local function findSeller()
     return nil
 end
 
--- ===== НОВАЯ findClothes (ClickDetector) =====
+-- ===== findClothes (ClickDetector) =====
 local function findClothes()
     clothes = {}
     for _, obj in ipairs(Workspace:GetDescendants()) do
@@ -474,7 +473,7 @@ local function findClothes()
             end
 
             table.insert(clothes, {
-                obj = obj,          -- ClickDetector
+                obj = obj,
                 parent = parent,
                 name = displayName,
                 position = position,
@@ -496,7 +495,7 @@ local function findClothes()
     log("Found " .. #clothes .. " items, with price: " .. withPrice)
 end
 
--- ===== НОВАЯ activatePrompt (клик по ClickDetector) =====
+-- ===== activatePrompt (клик по ClickDetector) =====
 local function activatePrompt(clickDetector)
     if not clickDetector then return false end
     local pos = findPosition(clickDetector.Parent)
@@ -556,7 +555,7 @@ local function goToPay()
     findSeller()
     if not seller then log("No seller") return end
     if seller.position then walkTo(seller.position) task.wait(1) end
-    activatePrompt(seller.obj)   -- клик по кассиру
+    activatePrompt(seller.obj)
     task.wait(2)
     local paid = pay()
     if paid then
